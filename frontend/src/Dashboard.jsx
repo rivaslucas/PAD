@@ -116,6 +116,15 @@ export default function Dashboard() {
     return () => window.removeEventListener('keydown', onKey);
   }, [boletaSeleccionada]);
 
+  // Al volver con "Atrás" desde la pasarela, recargamos para limpiar el botón y traer datos frescos
+  useEffect(() => {
+    const alVolver = (e) => {
+      if (e.persisted) window.location.reload();
+    };
+    window.addEventListener('pageshow', alVolver);
+    return () => window.removeEventListener('pageshow', alVolver);
+  }, []);
+
   const todas = datos?.deudas || [];
   const deudas = todas.filter((d) => d.estado !== 'PAGADO');
   const pagadas = (datos?.pagos?.length ? datos.pagos : todas.filter((d) => d.estado === 'PAGADO'))
@@ -221,10 +230,11 @@ export default function Dashboard() {
     { id: 'HISTORIAL', label: 'Historial de pagos', n: pagadas.length },
   ];
 
-const nombreReal =
+  const nombreReal =
     origenValidacion === 'OPENRENAPER' && datosGuardados?.nombre
       ? `${datosGuardados.nombre} ${datosGuardados.apellido || ''}`.trim()
       : `${datos.contribuyente.nombre} ${datos.contribuyente.apellido || ''}`.trim();
+
   return (
     <div
       className="min-h-screen bg-[#EDF1F4] text-[#12202B] antialiased selection:bg-[#0E4A6B] selection:text-white"
@@ -545,7 +555,7 @@ const nombreReal =
                   <div className="flex justify-between gap-4">
                     <div>
                       <p className="text-xs text-slate-500">Contribuyente</p>
-                      <p className="font-bold">{nombreReal}</p>
+                      <p className="font-bold">{nombreReal || 'Contribuyente'}</p>
                     </div>
                     <div className="text-right">
                       <p className="text-xs text-slate-500">{datos.contribuyente.cuit ? 'CUIT' : 'DNI'}</p>
