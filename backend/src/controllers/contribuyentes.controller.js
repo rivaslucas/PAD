@@ -4,14 +4,13 @@ export const obtenerDeudasPorDni = async (req, res) => {
   try {
     const { dni } = req.params;
 
+    // Traemos TODAS las obligaciones (antes se filtraban solo PENDIENTE y VENCIDO)
     const contribuyente = await prisma.contribuyente.findUnique({
       where: { dni },
       include: {
         bienes: {
           include: {
-            obligaciones: {
-              where: { estado: { in: ['PENDIENTE', 'VENCIDO'] } }
-            }
+            obligaciones: { orderBy: { fechaVencimiento: 'asc' } }
           }
         }
       }
@@ -21,18 +20,45 @@ export const obtenerDeudasPorDni = async (req, res) => {
       return res.status(404).json({ mensaje: "Contribuyente no encontrado." });
     }
 
-    const deudas = contribuyente.bienes.flatMap(bien =>
-      bien.obligaciones.map(obs => ({
-        id: obs.id,
-        concepto: obs.concepto,
-        periodo: obs.periodo,
-        montoTotal: Number(obs.montoOriginal) + Number(obs.interesesMora),
-        fechaVencimiento: obs.fechaVencimiento.toISOString().split('T')[0],
-        estado: obs.estado,
-        bienIdentificador: bien.identificador,
-        tipoBien: bien.tipo
-      }))
+    const filas = contribuyente.bienes.flatMap(bien =>
+      bien.obligaciones.map(obs => ({ obs, bien }))
     );
+
+    const formatear = ({ obs, bien }) => ({
+      id: obs.id,
+      concepto: obs.concepto,
+      periodo: obs.periodo,
+      montoTotal: Number(obs.montoOriginal) + Number(obs.interesesMora),
+      fechaVencimiento: obs.fechaVencimiento.toISOString().split('T')[0],
+      estado: obs.estado,
+      bienIdentificador: bien.identificador,
+      tipoBien: bien.tipo
+    });
+
+    // Lo que se debe: pendientes y vencidas
+    const deudas = filas
+      .filter(({ obs }) => ['PENDIENTE', 'VENCIDO'].includes(obs.estado))
+      .map(formatear);
+
+    // Historial: obligaciones pagadas, con los datos del pago real
+    const pagadas = filas.filter(({ obs }) => obs.estado === 'PAGADO');
+    const registros = pagadas.length
+      ? await prisma.pago.findMany({
+          where: { obligacionId: { in: pagadas.map(({ obs }) => obs.id) } }
+        })
+      : [];
+    const pagoPorObligacion = new Map(registros.map(p => [p.obligacionId, p]));
+
+    const pagos = pagadas.map(fila => {
+      const pago = pagoPorObligacion.get(fila.obs.id);
+      // Si tu modelo Pago usa otro nombre para la fecha, agregalo acá
+      const fecha = pago ? (pago.fechaPago ?? pago.createdAt ?? null) : null;
+      return {
+        ...formatear(fila),
+        montoTotal: pago ? Number(pago.montoAbonado) : formatear(fila).montoTotal,
+        fechaPago: fecha ? new Date(fecha).toISOString().split('T')[0] : null
+      };
+    });
 
     res.json({
       contribuyente: {
@@ -41,7 +67,8 @@ export const obtenerDeudasPorDni = async (req, res) => {
         cuit: contribuyente.cuit,
         dni: contribuyente.dni
       },
-      deudas
+      deudas,
+      pagos
     });
 
   } catch (error) {
@@ -90,7 +117,7 @@ export const validarIdentidad = async (req, res) => {
     console.error("Error o timeout conectando con OpenRENAPER:", error.message);
   }
 
-  // 2. Fallback de emergencia: Busca en Clever Cloud si OpenRENAPER falla o el DNI es ficticio
+  // 2. Fallback de emergencia: busca en la base local si OpenRENAPER falla o el DNI es ficticio
   try {
     const local = await prisma.contribuyente.findUnique({
       where: { dni: dniLimpio }

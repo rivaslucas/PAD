@@ -34,6 +34,10 @@ const plan = new Map(); // "identificador|periodo" -> datos del pago
 const pagos = [];
 const usadas = new Set();
 
+// ⚠️ Nombre del campo de fecha en el modelo Pago (ej: 'fechaPago' o 'createdAt').
+// Poné null si tu modelo no tiene ninguno.
+const CAMPO_FECHA_PAGO = 'fechaPago';
+
 /* ───────────── Generadores de obligaciones ───────────── */
 
 function mkOb(ident, concepto, periodo, monto, vence, estado) {
@@ -107,14 +111,12 @@ async function crear({ dni, pre = '20', nombre, apellido, email, telefono, biene
     for (const o of b.obligaciones) {
       if (o.estado !== P) continue;
       const p = plan.get(`${b.identificador}|${o.periodo}`);
-      // ⚠️ AJUSTAR los nombres de campo al modelo Pago de tu schema.prisma
       pagos.push({
         obligacionId: o.id,
-        monto: p.monto,
-        fechaPago: p.fechaPago,
-        medioPago: p.medio,
-        referencia: `PADI-${dni}-${String(o.id).slice(-6).toUpperCase()}`,
-        estado: 'APROBADO',
+        montoAbonado: p.monto,
+        idTransaccionExterna: `SEED-${dni}-${o.id}`,
+        estado: 'COMPLETADO',
+        ...(CAMPO_FECHA_PAGO ? { [CAMPO_FECHA_PAGO]: p.fechaPago } : {}),
       });
     }
   }

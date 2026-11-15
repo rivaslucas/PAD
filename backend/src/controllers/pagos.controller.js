@@ -1,7 +1,9 @@
 import crypto from 'node:crypto';
 import prisma from '../config/db.js';
 
-// Mapa temporal en memoria para asociar el ID del link de Padi con nuestra Boleta
+// ⚠️ Mapa en memoria: se pierde si el servidor se reinicia o se duerme (pasa en Render gratis).
+// Si eso ocurre entre generar el link y cobrar, el pago no se registra.
+// Solución definitiva: guardarlo en la base (ver nota en la respuesta).
 const mapeoLinks = new Map();
 
 // ==========================================
@@ -17,6 +19,11 @@ export const generarLinkDePago = async (req, res) => {
     });
 
     if (!obligacion) return res.status(404).json({ error: "Boleta no encontrada" });
+
+    // NUEVO: no se puede volver a pagar una boleta ya cobrada
+    if (obligacion.estado === 'PAGADO') {
+      return res.status(409).json({ error: "Esta boleta ya fue pagada." });
+    }
 
     const montoTotal = Number(obligacion.montoOriginal) + Number(obligacion.interesesMora);
     const apiKey = process.env.PADI_API_KEY;
@@ -38,12 +45,12 @@ export const generarLinkDePago = async (req, res) => {
     if (!padiResponse.ok) return res.status(500).json({ error: "Error en pasarela" });
 
     const dataPadi = await padiResponse.json();
-    
-    // GUARDAMOS LA ASOCIACIÓN: El ID que generó Padi le corresponde a nuestro id_obligacion
+
     mapeoLinks.set(dataPadi.id, id_obligacion);
 
-    res.json({ link_pago: dataPadi.checkoutUrl }); 
+    res.json({ link_pago: dataPadi.checkoutUrl });
   } catch (error) {
+    console.error("Error generando link de pago:", error);
     res.status(500).json({ error: "Error interno del servidor" });
   }
 };
@@ -60,17 +67,21 @@ export const registrarPagoWebhook = async (req, res) => {
       return res.status(401).send('Faltan credenciales de webhook');
     }
 
-    // 1. Validación de Seguridad HMAC-SHA256 (Padi)
+    // 1. Validación HMAC-SHA256 sobre el cuerpo crudo
     const expectedSignature = crypto
       .createHmac('sha256', secret)
-      .update(req.body) // Usamos el buffer crudo (raw)
+      .update(req.body)
       .digest('hex');
 
-    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) {
+    const recibida = Buffer.from(signature);
+    const esperada = Buffer.from(expectedSignature);
+
+    // CORREGIDO: timingSafeEqual lanza error si los largos difieren (daba 500 en vez de 401)
+    if (recibida.length !== esperada.length || !crypto.timingSafeEqual(recibida, esperada)) {
       return res.status(401).send('Firma inválida');
     }
 
-    // 2. Parseamos el JSON (ahora que sabemos que es 100% real y seguro)
+    // 2. Parseamos el JSON ya verificado
     const payload = JSON.parse(req.body.toString('utf-8'));
 
     // 3. Procesamos el pago si fue exitoso
@@ -79,16 +90,21 @@ export const registrarPagoWebhook = async (req, res) => {
       const monto_abonado = payload.data.amount;
       const id_transaccion_padi = payload.data.paymentId;
 
-      // Recuperamos qué boleta era usando el mapa que guardamos antes
+      // NUEVO: idempotencia. Si Padi reintenta el aviso, no duplicamos el pago
+      const yaRegistrado = await prisma.pago.findFirst({
+        where: { idTransaccionExterna: id_transaccion_padi }
+      });
+      if (yaRegistrado) {
+        return res.status(200).json({ received: true });
+      }
+
       const id_obligacion = mapeoLinks.get(paymentLinkId);
 
       if (!id_obligacion) {
         console.warn(`No se encontró la boleta local para el link Padi: ${paymentLinkId}`);
-        // Le respondemos 200 a Padi igual para que no reintente enviarnos el aviso infinitamente
-        return res.status(200).json({ received: true }); 
+        return res.status(200).json({ received: true });
       }
 
-      // Transacción Prisma (Actualizamos BD)
       await prisma.$transaction([
         prisma.pago.create({
           data: {
@@ -104,10 +120,10 @@ export const registrarPagoWebhook = async (req, res) => {
         })
       ]);
 
+      mapeoLinks.delete(paymentLinkId);
       console.log(`✅ ¡Pago Exitoso! Boleta ${id_obligacion} cobrada por $${monto_abonado}`);
     }
 
-    // Respondemos 200 OK rápidamente como pide Padi
     res.status(200).json({ received: true });
 
   } catch (error) {
