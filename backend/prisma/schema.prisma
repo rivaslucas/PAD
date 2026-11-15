@@ -1,0 +1,73 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Contribuyente {
+  id        Int      @id @default(autoincrement())
+  dni       String   @unique
+  cuit      String?  @unique
+  nombre    String
+  apellido  String
+  email     String?
+  telefono  String?
+  bienes    BienRegistrable[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model BienRegistrable {
+  id              Int      @id @default(autoincrement())
+  tipo            TipoBien 
+  identificador   String   @unique 
+  contribuyenteId Int
+  contribuyente   Contribuyente @relation(fields: [contribuyenteId], references: [id])
+  obligaciones    ObligacionTributaria[]
+  createdAt       DateTime @default(now())
+}
+
+enum TipoBien {
+  AUTOMOTOR
+  INMOBILIARIO
+}
+
+model ObligacionTributaria {
+  id               Int      @id @default(autoincrement())
+  concepto         String   
+  periodo          String   
+  montoOriginal    Decimal  @db.Decimal(10, 2)
+  interesesMora    Decimal  @default(0.00) @db.Decimal(10, 2)
+  fechaVencimiento DateTime
+  estado           EstadoBoleta @default(PENDIENTE)
+  bienId           Int
+  bien             BienRegistrable @relation(fields: [bienId], references: [id])
+  pagos            Pago[] 
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+enum EstadoBoleta {
+  PENDIENTE
+  VENCIDO
+  PAGADO
+}
+
+model Pago {
+  id                   Int      @id @default(autoincrement())
+  montoAbonado         Decimal  @db.Decimal(10, 2)
+  fechaTransaccion     DateTime @default(now())
+  idTransaccionExterna String?  @unique 
+  estado               EstadoPago @default(PENDIENTE)
+  obligacionId         Int
+  obligacion           ObligacionTributaria @relation(fields: [obligacionId], references: [id])
+}
+
+enum EstadoPago {
+  PENDIENTE
+  COMPLETADO
+  RECHAZADO
+}
