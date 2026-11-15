@@ -17,6 +17,28 @@ const fmtFecha = (f) => {
   return isNaN(d) ? f : d.toLocaleDateString('es-AR', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
 };
 
+const MESES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+
+// Clave numérica para ordenar y comparar períodos: "2026-10" y "2026-Bimestre 5" (que cierra en octubre)
+const periodoClave = (p = '') => {
+  const mensual = /^(\d{4})-(\d{1,2})$/.exec(p);
+  if (mensual) return Number(mensual[1]) * 100 + Number(mensual[2]);
+  const bim = /^(\d{4})-Bimestre (\d)$/.exec(p);
+  if (bim) return Number(bim[1]) * 100 + Number(bim[2]) * 2;
+  return 0;
+};
+
+const periodoLabel = (p = '') => {
+  const mensual = /^(\d{4})-(\d{1,2})$/.exec(p);
+  if (mensual) return `${MESES[Number(mensual[2]) - 1]} ${mensual[1]}`;
+  const bim = /^(\d{4})-Bimestre (\d)$/.exec(p);
+  if (bim) return `Bimestre ${bim[2]} de ${bim[1]}`;
+  return p;
+};
+
+const nombreBien = (d) =>
+  d.tipoBien === 'INMOBILIARIO' ? 'Inmueble' : (d.concepto || '').split(' - ')[1] || 'Vehículo';
+
 const estadoDe = (e) =>
   ESTADOS[e] || { label: e, bar: 'bg-slate-400', chip: 'bg-slate-100 text-slate-700', dot: 'bg-slate-400' };
 
@@ -47,6 +69,7 @@ const ICONOS = {
   doc: 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5zM14 3v5h5M9 13h6M9 17h6',
   imprimir: 'M6 9V3h12v6M6 18H4a1 1 0 0 1-1-1v-6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v6a1 1 0 0 1-1 1h-2M7 14h10v7H7z',
   cerrar: 'M6 6l12 12M18 6L6 18',
+  buscar: 'M21 21l-4.3-4.3M17 11a6 6 0 1 1-12 0 6 6 0 0 1 12 0z',
   check: 'M5 12.5l4.5 4.5L19 7.5',
   alerta: 'M12 9v4M12 17h.01M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
 };
@@ -63,6 +86,10 @@ export default function Dashboard() {
   const [pagandoId, setPagandoId] = useState(null);
   const [boletaSeleccionada, setBoletaSeleccionada] = useState(null);
   const [filtroEstado, setFiltroEstado] = useState('TODOS');
+  const [filtroBien, setFiltroBien] = useState('TODOS');
+  const [busqueda, setBusqueda] = useState('');
+  const [periodoDesde, setPeriodoDesde] = useState('');
+  const [periodoHasta, setPeriodoHasta] = useState('');
 
   const API_URL = import.meta.env.VITE_API_URL || 'https://pad-3anq.onrender.com';
 
@@ -136,6 +163,39 @@ export default function Dashboard() {
     .map((d) => d.fechaVencimiento)
     .sort()[0];
 
+  // Bienes detectados automáticamente a partir de las boletas y los pagos
+  const bienes = [];
+  const periodos = [];
+  [...deudas, ...pagadas].forEach((d) => {
+    if (d.bienIdentificador && !bienes.some((b) => b.id === d.bienIdentificador)) {
+      bienes.push({ id: d.bienIdentificador, nombre: nombreBien(d) });
+    }
+    if (d.periodo && !periodos.includes(d.periodo)) periodos.push(d.periodo);
+  });
+  periodos.sort((a, b) => periodoClave(a) - periodoClave(b) || a.localeCompare(b));
+
+  const filtrosActivos = filtroBien !== 'TODOS' || busqueda.trim() !== '' || periodoDesde !== '' || periodoHasta !== '';
+  const rangoInvertido = periodoDesde && periodoHasta && periodoClave(periodoDesde) > periodoClave(periodoHasta);
+
+  const pasaFiltros = (d) => {
+    if (filtroBien !== 'TODOS' && d.bienIdentificador !== filtroBien) return false;
+    const q = busqueda.trim().toLowerCase();
+    if (q && !`${d.bienIdentificador || ''} ${d.concepto || ''}`.toLowerCase().includes(q)) return false;
+    const k = periodoClave(d.periodo);
+    if (periodoDesde && k < periodoClave(periodoDesde)) return false;
+    if (periodoHasta && k > periodoClave(periodoHasta)) return false;
+    return true;
+  };
+  const deudasBase = deudas.filter(pasaFiltros);
+  const pagadasBase = pagadas.filter(pasaFiltros);
+
+  const limpiarFiltros = () => {
+    setFiltroBien('TODOS');
+    setBusqueda('');
+    setPeriodoDesde('');
+    setPeriodoHasta('');
+  };
+
   const resumen = useMemo(() => {
     const vencidas = deudas.filter((d) => d.estado === 'VENCIDO');
     const pendientes = deudas.filter((d) => d.estado !== 'VENCIDO');
@@ -149,7 +209,7 @@ export default function Dashboard() {
     };
   }, [deudas]);
 
-  const deudasFiltradas = filtroEstado === 'HISTORIAL' ? [] : deudas.filter((b) => filtroEstado === 'TODOS' || b.estado === filtroEstado);
+  const deudasFiltradas = filtroEstado === 'HISTORIAL' ? [] : deudasBase.filter((b) => filtroEstado === 'TODOS' || b.estado === filtroEstado);
   const totalFiltrado = deudasFiltradas.reduce((acc, b) => acc + (b.montoTotal || 0), 0);
 
   const handleCerrarSesion = () => {
@@ -224,10 +284,10 @@ export default function Dashboard() {
   const [enteros, decimales] = formatARS(resumen.total).split(',');
 
   const tabs = [
-    { id: 'TODOS', label: 'Todas', n: deudas.length },
-    { id: 'VENCIDO', label: 'Vencidas', n: resumen.nVencidas },
-    { id: 'PENDIENTE', label: 'Pendientes', n: resumen.nPendientes },
-    { id: 'HISTORIAL', label: 'Historial de pagos', n: pagadas.length },
+    { id: 'TODOS', label: 'Todas', n: deudasBase.length },
+    { id: 'VENCIDO', label: 'Vencidas', n: deudasBase.filter((d) => d.estado === 'VENCIDO').length },
+    { id: 'PENDIENTE', label: 'Pendientes', n: deudasBase.filter((d) => d.estado !== 'VENCIDO').length },
+    { id: 'HISTORIAL', label: 'Historial de pagos', n: pagadasBase.length },
   ];
 
   const nombreReal =
@@ -406,12 +466,93 @@ export default function Dashboard() {
             </div>
           </div>
 
+          {/* Filtros */}
+          <div className="px-5 sm:px-6 py-4 border-b border-[#D5DDE3] bg-[#F6F9FB] space-y-3">
+            <div className="flex flex-col lg:flex-row gap-3">
+              <div className="relative flex-1">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+                  <Icon d={ICONOS.buscar} />
+                </span>
+                <input
+                  type="search"
+                  value={busqueda}
+                  onChange={(e) => setBusqueda(e.target.value)}
+                  placeholder="Buscar por patente, partida o concepto"
+                  aria-label="Buscar por patente, partida o concepto"
+                  className="w-full pl-10 pr-3 py-2.5 text-sm bg-white border border-[#B9CFDC] rounded-md outline-none focus:border-[#0E4A6B] focus:ring-4 focus:ring-[#0E4A6B]/15"
+                />
+              </div>
+
+              <div className="flex items-center gap-2 text-sm">
+                <label htmlFor="periodo-desde" className="sr-only">Período desde</label>
+                <select
+                  id="periodo-desde"
+                  value={periodoDesde}
+                  onChange={(e) => setPeriodoDesde(e.target.value)}
+                  className="flex-1 lg:flex-none py-2.5 pl-3 pr-8 bg-white border border-[#B9CFDC] rounded-md outline-none cursor-pointer focus:border-[#0E4A6B] focus:ring-4 focus:ring-[#0E4A6B]/15"
+                >
+                  <option value="">Desde el inicio</option>
+                  {periodos.map((p) => <option key={p} value={p}>{periodoLabel(p)}</option>)}
+                </select>
+                <span className="text-slate-500">a</span>
+                <label htmlFor="periodo-hasta" className="sr-only">Período hasta</label>
+                <select
+                  id="periodo-hasta"
+                  value={periodoHasta}
+                  onChange={(e) => setPeriodoHasta(e.target.value)}
+                  className="flex-1 lg:flex-none py-2.5 pl-3 pr-8 bg-white border border-[#B9CFDC] rounded-md outline-none cursor-pointer focus:border-[#0E4A6B] focus:ring-4 focus:ring-[#0E4A6B]/15"
+                >
+                  <option value="">Hasta el último</option>
+                  {periodos.map((p) => <option key={p} value={p}>{periodoLabel(p)}</option>)}
+                </select>
+              </div>
+            </div>
+
+            {bienes.length > 1 && (
+              <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Filtrar por bien">
+                <span className="text-sm text-slate-500 mr-1">Bien</span>
+                {[{ id: 'TODOS', nombre: 'Todos' }, ...bienes].map((b) => (
+                  <button
+                    key={b.id}
+                    onClick={() => setFiltroBien(b.id)}
+                    aria-pressed={filtroBien === b.id}
+                    className={`px-3 py-1.5 rounded-full text-sm border transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0E4A6B] ${
+                      filtroBien === b.id
+                        ? 'bg-[#0E4A6B] border-[#0E4A6B] text-white'
+                        : 'bg-white border-[#B9CFDC] text-slate-700 hover:bg-[#EAF2F7]'
+                    }`}
+                  >
+                    {b.id === 'TODOS' ? 'Todos' : (
+                      <>
+                        <strong className="num">{b.id}</strong>
+                        <span className={filtroBien === b.id ? 'text-[#BFD9EA]' : 'text-slate-500'}> {b.nombre}</span>
+                      </>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {filtrosActivos && (
+              <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+                <p className={rangoInvertido ? 'text-[#B3261E] font-bold' : 'text-slate-600'}>
+                  {rangoInvertido
+                    ? 'El período "desde" es posterior al período "hasta".'
+                    : `Mostrando ${filtroEstado === 'HISTORIAL' ? pagadasBase.length : deudasFiltradas.length} resultados`}
+                </p>
+                <button onClick={limpiarFiltros} className="font-bold text-[#0E4A6B] underline cursor-pointer">
+                  Limpiar filtros
+                </button>
+              </div>
+            )}
+          </div>
+
           {filtroEstado === 'HISTORIAL' ? (
-            pagadas.length === 0 ? (
-              <div className="px-6 py-16 text-center text-sm text-slate-500">Todavía no registrás pagos.</div>
+            pagadasBase.length === 0 ? (
+              <div className="px-6 py-16 text-center text-sm text-slate-500">{filtrosActivos ? 'Ningún pago coincide con los filtros.' : 'Todavía no registrás pagos.'}</div>
             ) : (
               <ul>
-                {pagadas.map((p) => (
+                {pagadasBase.map((p) => (
                   <li key={p.id} className="relative border-b border-[#E4EAEE] last:border-b-0 hover:bg-[#F6F9FB] transition-colors">
                     <span className="absolute left-0 top-0 bottom-0 w-1 bg-[#1B6B3A]" aria-hidden="true" />
                     <div className="pl-6 pr-5 sm:pr-6 py-4 flex items-center gap-4">
@@ -443,8 +584,10 @@ export default function Dashboard() {
               <div className="w-12 h-12 bg-[#E3F3E8] text-[#1B6B3A] rounded-full flex items-center justify-center mx-auto">
                 <Icon d={ICONOS.check} className="w-6 h-6" />
               </div>
-              <p className="font-bold">No hay boletas en esta categoría</p>
-              <p className="text-sm text-slate-500">No tenés obligaciones con el filtro seleccionado.</p>
+              <p className="font-bold">{filtrosActivos ? 'Ninguna boleta coincide con los filtros' : 'No hay boletas en esta categoría'}</p>
+              <p className="text-sm text-slate-500">
+                {filtrosActivos ? 'Probá con otro bien, otra patente o un rango de períodos más amplio.' : 'No tenés obligaciones con el filtro seleccionado.'}
+              </p>
             </div>
           ) : (
             <ul>
