@@ -209,8 +209,12 @@ export default function Dashboard() {
     };
   }, [deudas]);
 
-  const deudasFiltradas = filtroEstado === 'HISTORIAL' ? [] : deudasBase.filter((b) => filtroEstado === 'TODOS' || b.estado === filtroEstado);
-  const totalFiltrado = deudasFiltradas.reduce((acc, b) => acc + (b.montoTotal || 0), 0);
+  const deudasFiltradas = filtroEstado === 'HISTORIAL'
+      ? []
+      : filtroEstado === 'TODOS'
+        ? [...deudasBase, ...pagadasBase]
+        : deudasBase.filter((b) => b.estado === filtroEstado);
+  const totalFiltrado = deudasFiltradas.filter((b) => b.estado !== 'PAGADO').reduce((acc, b) => acc + (b.montoTotal || 0), 0);
 
   const handleCerrarSesion = () => {
     localStorage.clear();
@@ -284,7 +288,7 @@ export default function Dashboard() {
   const [enteros, decimales] = formatARS(resumen.total).split(',');
 
   const tabs = [
-    { id: 'TODOS', label: 'Todas', n: deudasBase.length },
+    { id: 'TODOS', label: 'Todas', n: deudasBase.length + pagadasBase.length },
     { id: 'VENCIDO', label: 'Vencidas', n: deudasBase.filter((d) => d.estado === 'VENCIDO').length },
     { id: 'PENDIENTE', label: 'Pendientes', n: deudasBase.filter((d) => d.estado !== 'VENCIDO').length },
     { id: 'HISTORIAL', label: 'Historial de pagos', n: pagadasBase.length },
@@ -594,6 +598,7 @@ export default function Dashboard() {
               {deudasFiltradas.map((boleta) => {
                 const est = estadoDe(boleta.estado);
                 const vencida = boleta.estado === 'VENCIDO';
+                const pagada = boleta.estado === 'PAGADO';
                 return (
                   <li key={boleta.id} className="relative border-b border-[#E4EAEE] last:border-b-0 hover:bg-[#F6F9FB] transition-colors">
                     <span className={`absolute left-0 top-0 bottom-0 w-1 ${est.bar}`} aria-hidden="true" />
@@ -611,13 +616,15 @@ export default function Dashboard() {
                           {boleta.bienIdentificador && <>Ref. <strong className="text-[#12202B]">{boleta.bienIdentificador}</strong>. </>}
                           Período {boleta.periodo}.
                         </p>
-                        <p className={`text-sm num ${vencida ? 'text-[#B3261E] font-bold' : 'text-slate-600'}`}>
-                          {vencida ? 'Venció el' : 'Vence el'} {boleta.fechaVencimiento}
+                        <p className={`text-sm num ${vencida ? 'text-[#B3261E] font-bold' : pagada ? 'text-[#1B6B3A]' : 'text-slate-600'}`}>
+                          {pagada
+                            ? boleta.fechaPago ? `Pagada el ${fmtFecha(boleta.fechaPago)}` : 'Pagada'
+                            : `${vencida ? 'Venció el' : 'Vence el'} ${fmtFecha(boleta.fechaVencimiento)}`}
                         </p>
                       </div>
 
                       <div className="lg:text-right">
-                        <p className="text-xs text-slate-500">Importe</p>
+                        <p className="text-xs text-slate-500">{pagada ? 'Importe pagado' : 'Importe'}</p>
                         <p className="num text-2xl font-bold">${formatARS(boleta.montoTotal)}</p>
                       </div>
 
@@ -627,16 +634,16 @@ export default function Dashboard() {
                           className="px-4 py-2.5 rounded-md text-sm font-bold text-[#0E4A6B] border border-[#B9CFDC] hover:bg-[#EAF2F7] transition cursor-pointer flex items-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0E4A6B]"
                         >
                           <Icon d={ICONOS.doc} />
-                          Ver boleta
+                          {pagada ? 'Comprobante' : 'Ver boleta'}
                         </button>
-                        <button
+                        {!pagada && <button
                           onClick={() => handlePagar(boleta.id)}
                           disabled={pagandoId !== null}
                           className="px-5 py-2.5 rounded-md text-sm font-bold bg-[#0E4A6B] text-white hover:bg-[#0B3B56] disabled:opacity-60 disabled:cursor-not-allowed transition cursor-pointer flex items-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0E4A6B]"
                         >
                           <Icon d={ICONOS.tarjeta} />
                           {pagandoId === boleta.id ? 'Redirigiendo…' : 'Pagar'}
-                        </button>
+                        </button>}
                       </div>
                     </div>
                   </li>
@@ -651,7 +658,7 @@ export default function Dashboard() {
                 Las boletas vencidas ya incluyen los recargos por mora actualizados.
               </p>
               <p className="text-sm text-slate-600">
-                {filtroEstado === 'TODOS' ? 'Suma de todas las boletas' : `Suma de las boletas ${filtroEstado === 'VENCIDO' ? 'vencidas' : 'pendientes'}`}
+                {filtroEstado === 'TODOS' ? 'Total adeudado en esta lista' : `Suma de las boletas ${filtroEstado === 'VENCIDO' ? 'vencidas' : 'pendientes'}`}
                 <span className="num text-lg font-bold text-[#12202B] ml-3">${formatARS(totalFiltrado)}</span>
               </p>
             </div>
