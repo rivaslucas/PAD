@@ -3,17 +3,18 @@ import { useNavigate } from 'react-router-dom';
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  
-  // Estados para guardar los datos de la base de datos
+
   const [datos, setDatos] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState(null);
 
-  // Leemos el DNI de la memoria del navegador
+  const API_URL = import.meta.env.VITE_API_URL || 'https://pad-3anq.onrender.com';
+
   const dniUsuario = localStorage.getItem('dniUsuario');
+  const origenValidacion = localStorage.getItem('origenValidacion');
+  const datosGuardados = JSON.parse(localStorage.getItem('datosContribuyente') || 'null');
 
   useEffect(() => {
-    // Protección de ruta: Si no hay DNI en memoria, lo mandamos al Login
     if (!dniUsuario) {
       navigate('/');
       return;
@@ -21,12 +22,26 @@ export default function Dashboard() {
 
     const obtenerDeudas = async () => {
       try {
-        const respuesta = await fetch(`http://localhost:3000/api/contribuyentes/${dniUsuario}/deudas`);
-        
-        if (!respuesta.ok) {
-          throw new Error("No se encontraron datos del contribuyente");
+        const respuesta = await fetch(`${API_URL}/api/contribuyentes/${dniUsuario}/deudas`);
+
+        // Si el contribuyente fue validado por OpenRENAPER pero no tiene bienes/deudas en nuestra BD
+        if (respuesta.status === 404 && datosGuardados) {
+          setDatos({
+            contribuyente: {
+              nombre: datosGuardados.nombre,
+              apellido: '',
+              cuit: datosGuardados.cuit,
+              dni: datosGuardados.dni,
+            },
+            deudas: [],
+          });
+          return;
         }
-        
+
+        if (!respuesta.ok) {
+          throw new Error('No se encontraron datos del contribuyente');
+        }
+
         const resultado = await respuesta.json();
         setDatos(resultado);
       } catch (err) {
@@ -40,39 +55,37 @@ export default function Dashboard() {
   }, [dniUsuario, navigate]);
 
   const handleCerrarSesion = () => {
-    // Borramos el DNI de la memoria y lo devolvemos al Login
     localStorage.removeItem('dniUsuario');
+    localStorage.removeItem('datosContribuyente');
+    localStorage.removeItem('origenValidacion');
     navigate('/');
   };
 
-  // FUNCIÓN PARA PROCESAR EL PAGO CON PADI
   const handlePagar = async (id_obligacion) => {
     try {
-      // Le pedimos el link de pago a nuestro backend
-      const response = await fetch('http://localhost:3000/api/pagos/generar-link', {
+      const response = await fetch(`${API_URL}/api/pagos/generar-link`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ id_obligacion })
+        body: JSON.stringify({ id_obligacion }),
       });
 
       if (!response.ok) {
-        alert("Error al intentar generar el link de pago con Padi.");
+        alert('Error al intentar generar el link de pago con Padi.');
         return;
       }
 
       const data = await response.json();
-      
-      // Si el backend nos devuelve el link, redirigimos al usuario a la Billetera Virtual
+
       if (data.link_pago) {
-        window.location.href = data.link_pago; 
+        window.location.href = data.link_pago;
       } else {
-        alert("La pasarela de pagos no devolvió un enlace válido.");
+        alert('La pasarela de pagos no devolvió un enlace válido.');
       }
     } catch (error) {
-      console.error("Error al procesar el pago:", error);
-      alert("Error de conexión con el servidor.");
+      console.error('Error al procesar el pago:', error);
+      alert('Error de conexión con el servidor.');
     }
   };
 
@@ -88,7 +101,7 @@ export default function Dashboard() {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col justify-center items-center gap-4">
         <div className="font-bold text-red-600 text-xl">{error}</div>
-        <button 
+        <button
           onClick={handleCerrarSesion}
           className="bg-blue-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-blue-700 transition cursor-pointer"
         >
@@ -98,24 +111,30 @@ export default function Dashboard() {
     );
   }
 
-  // Calculamos el total sumando todas las deudas traídas de MySQL
   const totalAPagar = datos?.deudas.reduce((acc, boleta) => acc + boleta.montoTotal, 0) || 0;
 
   return (
     <div className="min-h-screen bg-gray-50 p-4 md:p-8">
       <div className="max-w-5xl mx-auto">
-        
         {/* Cabecera del Dashboard */}
-        <div className="flex justify-between items-center bg-white p-6 rounded-xl shadow-sm border border-gray-200 mb-6">
+        <div className="flex flex-col md:flex-row justify-between md:items-center gap-4 bg-white p-6 rounded-xl shadow-sm border border-gray-200 mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-gray-800">Mi Estado de Cuenta</h1>
+            <div className="flex items-center gap-3">
+              <h1 className="text-2xl font-bold text-gray-800">Mi Estado de Cuenta</h1>
+              {origenValidacion === 'OPENRENAPER' && (
+                <span className="text-xs font-semibold bg-green-100 text-green-800 px-2.5 py-0.5 rounded-full border border-green-200">
+                  ✓ Identidad verificada por OpenRENAPER
+                </span>
+              )}
+            </div>
             <p className="text-gray-500 text-sm mt-1">
-              Contribuyente: {datos.contribuyente.nombre} {datos.contribuyente.apellido} (DNI: {datos.contribuyente.dni})
+              Contribuyente: <span className="font-medium text-gray-700">{datos.contribuyente.nombre} {datos.contribuyente.apellido}</span> (DNI: {datos.contribuyente.dni}
+              {datos.contribuyente.cuit ? ` • CUIT: ${datos.contribuyente.cuit}` : ''})
             </p>
           </div>
-          <button 
+          <button
             onClick={handleCerrarSesion}
-            className="text-blue-600 font-medium hover:underline text-sm cursor-pointer"
+            className="text-blue-600 font-medium hover:underline text-sm cursor-pointer self-start md:self-auto"
           >
             Cerrar Sesión
           </button>
@@ -126,7 +145,7 @@ export default function Dashboard() {
           <div className="p-6 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
             <h2 className="text-lg font-semibold text-gray-700">Boletas Pendientes de Pago</h2>
           </div>
-          
+
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
@@ -149,7 +168,7 @@ export default function Dashboard() {
                   datos.deudas.map((boleta) => (
                     <tr key={boleta.id} className="hover:bg-gray-50 transition-colors border-b last:border-none">
                       <td className="p-4 font-medium">
-                        {boleta.concepto} <br/>
+                        {boleta.concepto} <br />
                         <span className="text-xs text-gray-400">Ref: {boleta.bienIdentificador}</span>
                       </td>
                       <td className="p-4">{boleta.periodo}</td>
@@ -160,7 +179,7 @@ export default function Dashboard() {
                       </td>
                       <td className="p-4 font-bold text-gray-900">${boleta.montoTotal.toLocaleString()}</td>
                       <td className="p-4 text-center">
-                        <button 
+                        <button
                           onClick={() => handlePagar(boleta.id)}
                           className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 transition cursor-pointer shadow-sm"
                         >
@@ -173,14 +192,13 @@ export default function Dashboard() {
               </tbody>
             </table>
           </div>
-          
+
           {/* Resumen total */}
           <div className="p-6 bg-gray-50 flex justify-end items-center gap-4 border-t border-gray-200">
             <span className="text-gray-600 font-medium">Total a pagar:</span>
             <span className="text-2xl font-bold text-gray-900">${totalAPagar.toLocaleString()}</span>
           </div>
         </div>
-
       </div>
     </div>
   );

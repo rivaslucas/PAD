@@ -1,31 +1,27 @@
+import crypto from 'node:crypto';
 import prisma from '../config/db.js';
 
+// Mapa temporal en memoria para asociar el ID del link de Padi con nuestra Boleta
+const mapeoLinks = new Map();
 
 // ==========================================
-// 1. FUNCIÓN PARA PEDIR EL LINK DE PAGO A PADI
+// 1. GENERAR LINK DE PAGO
 // ==========================================
 export const generarLinkDePago = async (req, res) => {
   try {
     const { id_obligacion } = req.body;
 
-    // 1. Buscamos la boleta en nuestra BD
     const obligacion = await prisma.obligacionTributaria.findUnique({
       where: { id: id_obligacion },
       include: { bien: true }
     });
 
-    if (!obligacion) {
-      return res.status(404).json({ error: "Boleta no encontrada" });
-    }
+    if (!obligacion) return res.status(404).json({ error: "Boleta no encontrada" });
 
-    // 2. Calculamos el total a pagar (Padi pide el número exacto, máximo 2 decimales)
     const montoTotal = Number(obligacion.montoOriginal) + Number(obligacion.interesesMora);
-
-    // 3. Armamos la petición EXÁCTAMENTE como lo pide la documentación de Padi
-    const padiUrl = 'https://padi.runasp.net/api/v1/integrations/payment-links';
     const apiKey = process.env.PADI_API_KEY;
 
-    const padiResponse = await fetch(padiUrl, {
+    const padiResponse = await fetch('https://padi.runasp.net/api/v1/integrations/payment-links', {
       method: 'POST',
       headers: {
         'X-Api-Key': apiKey,
@@ -33,26 +29,21 @@ export const generarLinkDePago = async (req, res) => {
       },
       body: JSON.stringify({
         amount: montoTotal,
-        title: `${obligacion.concepto} - ${obligacion.bien.identificador}`.substring(0, 128), // Padi pide máximo 128 caracteres
+        title: `${obligacion.concepto} - ${obligacion.bien.identificador}`.substring(0, 128),
         currency: "ARS",
         type: "SingleUse"
       })
     });
 
-    if (!padiResponse.ok) {
-      const errorPadi = await padiResponse.text();
-      console.error("Error de Padi:", errorPadi);
-      return res.status(500).json({ error: "No se pudo conectar con la pasarela de pagos" });
-    }
+    if (!padiResponse.ok) return res.status(500).json({ error: "Error en pasarela" });
 
-    // 4. Padi nos devuelve el JSON exitoso (código 201)
     const dataPadi = await padiResponse.json();
     
-    // Le mandamos al Frontend el checkoutUrl que es donde el usuario va a poner su tarjeta
-    res.json({ link_pago: dataPadi.checkoutUrl }); 
+    // GUARDAMOS LA ASOCIACIÓN: El ID que generó Padi le corresponde a nuestro id_obligacion
+    mapeoLinks.set(dataPadi.id, id_obligacion);
 
+    res.json({ link_pago: dataPadi.checkoutUrl }); 
   } catch (error) {
-    console.error("Error al generar link de pago:", error);
     res.status(500).json({ error: "Error interno del servidor" });
   }
 };
@@ -62,46 +53,65 @@ export const generarLinkDePago = async (req, res) => {
 // ==========================================
 export const registrarPagoWebhook = async (req, res) => {
   try {
-    // Datos que acordamos que el grupo Padi (Billetera Virtual) nos va a enviar
-    const { id_obligacion, monto_abonado, id_transaccion_padi } = req.body;
+    const signature = req.headers['x-padi-signature'];
+    const secret = process.env.PADI_WEBHOOK_SECRET;
 
-    // 1. Verificamos que la boleta exista
-    const obligacion = await prisma.obligacionTributaria.findUnique({
-      where: { id: id_obligacion }
-    });
-
-    if (!obligacion) {
-      return res.status(404).json({ error: "Boleta no encontrada" });
+    if (!signature || !secret) {
+      return res.status(401).send('Faltan credenciales de webhook');
     }
 
-    if (obligacion.estado === 'PAGADO') {
-      return res.status(400).json({ error: "Esta boleta ya se encuentra pagada" });
+    // 1. Validación de Seguridad HMAC-SHA256 (Padi)
+    const expectedSignature = crypto
+      .createHmac('sha256', secret)
+      .update(req.body) // Usamos el buffer crudo (raw)
+      .digest('hex');
+
+    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) {
+      return res.status(401).send('Firma inválida');
     }
 
-    // 2. Transacción de Prisma: Guardamos el comprobante y marcamos la boleta como PAGADA al mismo tiempo
-    const resultado = await prisma.$transaction([
-      prisma.pago.create({
-        data: {
-          montoAbonado: monto_abonado,
-          idTransaccionExterna: id_transaccion_padi,
-          estado: 'COMPLETADO',
-          obligacionId: id_obligacion
-        }
-      }),
-      prisma.obligacionTributaria.update({
-        where: { id: id_obligacion },
-        data: { estado: 'PAGADO' }
-      })
-    ]);
+    // 2. Parseamos el JSON (ahora que sabemos que es 100% real y seguro)
+    const payload = JSON.parse(req.body.toString('utf-8'));
 
-    return res.status(200).json({
-      mensaje: "Pago registrado exitosamente",
-      pago_id: resultado[0].id,
-      transaccion_padi: resultado[0].idTransaccionExterna
-    });
+    // 3. Procesamos el pago si fue exitoso
+    if (payload.event === 'payment.succeeded') {
+      const paymentLinkId = payload.data.paymentLinkId;
+      const monto_abonado = payload.data.amount;
+      const id_transaccion_padi = payload.data.paymentId;
+
+      // Recuperamos qué boleta era usando el mapa que guardamos antes
+      const id_obligacion = mapeoLinks.get(paymentLinkId);
+
+      if (!id_obligacion) {
+        console.warn(`No se encontró la boleta local para el link Padi: ${paymentLinkId}`);
+        // Le respondemos 200 a Padi igual para que no reintente enviarnos el aviso infinitamente
+        return res.status(200).json({ received: true }); 
+      }
+
+      // Transacción Prisma (Actualizamos BD)
+      await prisma.$transaction([
+        prisma.pago.create({
+          data: {
+            montoAbonado: monto_abonado,
+            idTransaccionExterna: id_transaccion_padi,
+            estado: 'COMPLETADO',
+            obligacionId: id_obligacion
+          }
+        }),
+        prisma.obligacionTributaria.update({
+          where: { id: id_obligacion },
+          data: { estado: 'PAGADO' }
+        })
+      ]);
+
+      console.log(`✅ ¡Pago Exitoso! Boleta ${id_obligacion} cobrada por $${monto_abonado}`);
+    }
+
+    // Respondemos 200 OK rápidamente como pide Padi
+    res.status(200).json({ received: true });
 
   } catch (error) {
-    console.error("Error en el Webhook de pagos:", error);
-    res.status(500).json({ error: "Error interno procesando el pago" });
+    console.error("Error en Webhook:", error);
+    res.status(500).json({ error: "Error procesando webhook" });
   }
 };
