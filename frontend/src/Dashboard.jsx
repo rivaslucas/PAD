@@ -1,5 +1,57 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
+
+/* ───────────── Utilidades ───────────── */
+
+const formatARS = (n) =>
+  Number(n || 0).toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+const ESTADOS = {
+  VENCIDO: { label: 'Vencida', bar: 'bg-[#B3261E]', chip: 'bg-[#FBE9E7] text-[#8C1D18]', dot: 'bg-[#B3261E]' },
+  PENDIENTE: { label: 'Pendiente', bar: 'bg-[#C98A00]', chip: 'bg-[#FFF3D6] text-[#7A5200]', dot: 'bg-[#C98A00]' },
+  PAGADO: { label: 'Pagada', bar: 'bg-[#1B6B3A]', chip: 'bg-[#E3F3E8] text-[#1B6B3A]', dot: 'bg-[#1B6B3A]' },
+};
+const fmtFecha = (f) => {
+  if (!f) return '';
+  const d = new Date(f);
+  return isNaN(d) ? f : d.toLocaleDateString('es-AR', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+};
+
+const estadoDe = (e) =>
+  ESTADOS[e] || { label: e, bar: 'bg-slate-400', chip: 'bg-slate-100 text-slate-700', dot: 'bg-slate-400' };
+
+// Código de barras ilustrativo, estable para cada boleta
+const generarBarras = (seed) => {
+  let s = (Number(seed) || 7) * 9301 + 49297;
+  const barras = [];
+  let x = 0;
+  while (x < 280) {
+    s = (s * 9301 + 49297) % 233280;
+    const w = 1 + Math.floor((s / 233280) * 3);
+    barras.push({ x, w });
+    x += w + 1 + Math.floor((s / 233280) * 2);
+  }
+  return barras;
+};
+
+/* ───────────── Iconos ───────────── */
+
+const Icon = ({ d, className = 'w-4 h-4' }) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className={className} aria-hidden="true">
+    <path d={d} />
+  </svg>
+);
+const ICONOS = {
+  salir: 'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9',
+  tarjeta: 'M3 7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7zM3 10h18M7 15h3',
+  doc: 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5zM14 3v5h5M9 13h6M9 17h6',
+  imprimir: 'M6 9V3h12v6M6 18H4a1 1 0 0 1-1-1v-6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v6a1 1 0 0 1-1 1h-2M7 14h10v7H7z',
+  cerrar: 'M6 6l12 12M18 6L6 18',
+  check: 'M5 12.5l4.5 4.5L19 7.5',
+  alerta: 'M12 9v4M12 17h.01M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
+};
+
+/* ───────────── Componente ───────────── */
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -7,6 +59,10 @@ export default function Dashboard() {
   const [datos, setDatos] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState(null);
+  const [errorPago, setErrorPago] = useState(null);
+  const [pagandoId, setPagandoId] = useState(null);
+  const [boletaSeleccionada, setBoletaSeleccionada] = useState(null);
+  const [filtroEstado, setFiltroEstado] = useState('TODOS');
 
   const API_URL = import.meta.env.VITE_API_URL || 'https://pad-3anq.onrender.com';
 
@@ -24,7 +80,6 @@ export default function Dashboard() {
       try {
         const respuesta = await fetch(`${API_URL}/api/contribuyentes/${dniUsuario}/deudas`);
 
-        // Si el contribuyente fue validado por OpenRENAPER pero no tiene bienes/deudas en nuestra BD
         if (respuesta.status === 404 && datosGuardados) {
           setDatos({
             contribuyente: {
@@ -39,11 +94,10 @@ export default function Dashboard() {
         }
 
         if (!respuesta.ok) {
-          throw new Error('No se encontraron datos del contribuyente');
+          throw new Error('No se pudieron recuperar los registros del contribuyente.');
         }
 
-        const resultado = await respuesta.json();
-        setDatos(resultado);
+        setDatos(await respuesta.json());
       } catch (err) {
         setError(err.message);
       } finally {
@@ -54,152 +108,519 @@ export default function Dashboard() {
     obtenerDeudas();
   }, [dniUsuario, navigate]);
 
+  // Cerrar la boleta con Escape
+  useEffect(() => {
+    if (!boletaSeleccionada) return;
+    const onKey = (e) => e.key === 'Escape' && setBoletaSeleccionada(null);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [boletaSeleccionada]);
+
+  const todas = datos?.deudas || [];
+  const deudas = todas.filter((d) => d.estado !== 'PAGADO');
+  const pagadas = (datos?.pagos?.length ? datos.pagos : todas.filter((d) => d.estado === 'PAGADO'))
+    .slice()
+    .sort((a, b) => String(b.fechaPago || b.fechaVencimiento).localeCompare(String(a.fechaPago || a.fechaVencimiento)));
+  const totalPagado = pagadas.reduce((a, d) => a + (d.montoTotal || 0), 0);
+  const proximoVenc = deudas
+    .filter((d) => d.estado !== 'VENCIDO')
+    .map((d) => d.fechaVencimiento)
+    .sort()[0];
+
+  const resumen = useMemo(() => {
+    const vencidas = deudas.filter((d) => d.estado === 'VENCIDO');
+    const pendientes = deudas.filter((d) => d.estado !== 'VENCIDO');
+    const suma = (l) => l.reduce((a, d) => a + (d.montoTotal || 0), 0);
+    return {
+      total: suma(deudas),
+      montoVencido: suma(vencidas),
+      montoPendiente: suma(pendientes),
+      nVencidas: vencidas.length,
+      nPendientes: pendientes.length,
+    };
+  }, [deudas]);
+
+  const deudasFiltradas = filtroEstado === 'HISTORIAL' ? [] : deudas.filter((b) => filtroEstado === 'TODOS' || b.estado === filtroEstado);
+  const totalFiltrado = deudasFiltradas.reduce((acc, b) => acc + (b.montoTotal || 0), 0);
+
   const handleCerrarSesion = () => {
-    localStorage.removeItem('dniUsuario');
-    localStorage.removeItem('datosContribuyente');
-    localStorage.removeItem('origenValidacion');
+    localStorage.clear();
     navigate('/');
   };
 
   const handlePagar = async (id_obligacion) => {
+    setErrorPago(null);
+    setPagandoId(id_obligacion);
     try {
       const response = await fetch(`${API_URL}/api/pagos/generar-link`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id_obligacion }),
       });
 
       if (!response.ok) {
-        alert('Error al intentar generar el link de pago con Padi.');
+        setErrorPago('No pudimos iniciar el pago con Padi. Intentá de nuevo en unos minutos.');
+        setPagandoId(null);
         return;
       }
 
       const data = await response.json();
-
       if (data.link_pago) {
         window.location.href = data.link_pago;
       } else {
-        alert('La pasarela de pagos no devolvió un enlace válido.');
+        setErrorPago('La pasarela de pagos no devolvió un enlace válido. Intentá de nuevo.');
+        setPagandoId(null);
       }
-    } catch (error) {
-      console.error('Error al procesar el pago:', error);
-      alert('Error de conexión con el servidor.');
+    } catch (err) {
+      console.error('Error de red:', err);
+      setErrorPago('No hay conexión con el servidor de pagos. Revisá tu internet e intentá de nuevo.');
+      setPagandoId(null);
     }
   };
 
+  /* ───────────── Estados de carga y error ───────────── */
+
   if (cargando) {
     return (
-      <div className="min-h-screen bg-gray-50 flex justify-center items-center font-bold text-gray-500">
-        Cargando estado de cuenta...
+      <div className="min-h-screen bg-[#EDF1F4] flex flex-col justify-center items-center gap-4">
+        <div className="w-9 h-9 border-[3px] border-[#0E4A6B] border-t-transparent rounded-full animate-spin" />
+        <p className="text-sm text-slate-600">Consultando tus obligaciones…</p>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="min-h-screen bg-gray-50 flex flex-col justify-center items-center gap-4">
-        <div className="font-bold text-red-600 text-xl">{error}</div>
-        <button
-          onClick={handleCerrarSesion}
-          className="bg-blue-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-blue-700 transition cursor-pointer"
-        >
-          Volver al Login
-        </button>
+      <div className="min-h-screen bg-[#EDF1F4] flex justify-center items-center p-4">
+        <div className="bg-white border border-[#D5DDE3] p-8 rounded-lg max-w-md w-full space-y-5">
+          <div className="w-11 h-11 bg-[#FBE9E7] text-[#B3261E] rounded-full flex items-center justify-center">
+            <Icon d={ICONOS.alerta} className="w-5 h-5" />
+          </div>
+          <div className="space-y-1">
+            <h1 className="text-lg font-bold text-[#12202B]">No pudimos cargar tu cuenta</h1>
+            <p className="text-sm text-slate-600">{error}</p>
+          </div>
+          <button
+            onClick={handleCerrarSesion}
+            className="w-full bg-[#0E4A6B] text-white py-3 rounded-md text-sm font-semibold hover:bg-[#0B3B56] transition cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0E4A6B]"
+          >
+            Volver al inicio
+          </button>
+        </div>
       </div>
     );
   }
 
-  const totalAPagar = datos?.deudas.reduce((acc, boleta) => acc + boleta.montoTotal, 0) || 0;
+  const pctVencido = resumen.total > 0 ? (resumen.montoVencido / resumen.total) * 100 : 0;
+  const [enteros, decimales] = formatARS(resumen.total).split(',');
+
+  const tabs = [
+    { id: 'TODOS', label: 'Todas', n: deudas.length },
+    { id: 'VENCIDO', label: 'Vencidas', n: resumen.nVencidas },
+    { id: 'PENDIENTE', label: 'Pendientes', n: resumen.nPendientes },
+    { id: 'HISTORIAL', label: 'Historial de pagos', n: pagadas.length },
+  ];
+
+  const nombreCompleto = `${datos.contribuyente.nombre} ${datos.contribuyente.apellido || ''}`.trim();
 
   return (
-    <div className="min-h-screen bg-gray-50 p-4 md:p-8">
-      <div className="max-w-5xl mx-auto">
-        {/* Cabecera del Dashboard */}
-        <div className="flex flex-col md:flex-row justify-between md:items-center gap-4 bg-white p-6 rounded-xl shadow-sm border border-gray-200 mb-6">
-          <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold text-gray-800">Mi Estado de Cuenta</h1>
-              {origenValidacion === 'OPENRENAPER' && (
-                <span className="text-xs font-semibold bg-green-100 text-green-800 px-2.5 py-0.5 rounded-full border border-green-200">
-                  ✓ Identidad verificada por OpenRENAPER
-                </span>
-              )}
+    <div
+      className="min-h-screen bg-[#EDF1F4] text-[#12202B] antialiased selection:bg-[#0E4A6B] selection:text-white"
+      style={{ fontFamily: "'Atkinson Hyperlegible', system-ui, -apple-system, 'Segoe UI', sans-serif" }}
+    >
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap');
+        .num { font-variant-numeric: tabular-nums; }
+        @keyframes sheetIn { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+        .sheet-in { animation: sheetIn .22s ease-out; }
+        @media (prefers-reduced-motion: reduce) { .sheet-in { animation: none; } }
+        @media print {
+          body * { visibility: hidden; }
+          #boleta-imprimible, #boleta-imprimible * { visibility: visible; }
+          #boleta-imprimible { position: fixed; left: 0; top: 0; width: 100%; box-shadow: none !important; }
+          .no-print { display: none !important; }
+        }
+      `}</style>
+
+      {/* Encabezado */}
+      <header className="bg-white border-b border-[#D5DDE3] sticky top-0 z-30">
+        <div className="h-1 bg-[#74ACDF]" />
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 h-16 flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-[#0E4A6B] rounded-md flex items-center justify-center text-white font-bold text-sm tracking-tight">
+              ART
             </div>
-            <p className="text-gray-500 text-sm mt-1">
-              Contribuyente: <span className="font-medium text-gray-700">{datos.contribuyente.nombre} {datos.contribuyente.apellido}</span> (DNI: {datos.contribuyente.dni}
-              {datos.contribuyente.cuit ? ` • CUIT: ${datos.contribuyente.cuit}` : ''})
-            </p>
+            <div className="leading-tight">
+              <span className="text-xs text-slate-500 block">Agencia de Recaudación</span>
+              <span className="text-base font-bold">Portal del Contribuyente</span>
+            </div>
           </div>
+
           <button
             onClick={handleCerrarSesion}
-            className="text-blue-600 font-medium hover:underline text-sm cursor-pointer self-start md:self-auto"
+            className="text-sm font-bold text-slate-700 hover:text-[#B3261E] px-3 py-2 rounded-md hover:bg-[#FBE9E7] transition cursor-pointer flex items-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0E4A6B]"
           >
-            Cerrar Sesión
+            <Icon d={ICONOS.salir} />
+            <span className="hidden sm:inline">Cerrar sesión</span>
+            <span className="sm:hidden sr-only">Cerrar sesión</span>
           </button>
         </div>
+      </header>
 
-        {/* Tabla de Obligaciones */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-          <div className="p-6 border-b border-gray-200 bg-gray-50 flex justify-between items-center">
-            <h2 className="text-lg font-semibold text-gray-700">Boletas Pendientes de Pago</h2>
+      <main className="max-w-5xl mx-auto px-4 sm:px-6 py-8 md:py-12 space-y-8">
+
+        {/* Identidad + resumen */}
+        <section className="grid lg:grid-cols-[1fr_380px] gap-8 lg:gap-10 items-start">
+          <div className="space-y-4 pt-1">
+            <p className="text-sm text-slate-500">Cuenta del contribuyente</p>
+            <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-[#12202B] leading-tight">
+              {nombreCompleto}
+            </h1>
+            <p className="text-sm text-slate-600 num">
+              DNI <strong className="text-[#12202B]">{datos.contribuyente.dni}</strong>
+              {datos.contribuyente.cuit && (
+                <span className="ml-4">
+                  CUIT <strong className="text-[#12202B]">{datos.contribuyente.cuit}</strong>
+                </span>
+              )}
+            </p>
+            {origenValidacion === 'OPENRENAPER' && (
+              <p className="inline-flex items-center gap-2 text-sm font-bold text-[#1B6B3A] bg-[#E3F3E8] px-3 py-1.5 rounded-md">
+                <Icon d={ICONOS.check} />
+                Identidad verificada con OpenRENAPER
+              </p>
+            )}
           </div>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-gray-50 text-gray-600 text-sm uppercase tracking-wider">
-                  <th className="p-4 border-b">Concepto</th>
-                  <th className="p-4 border-b">Periodo</th>
-                  <th className="p-4 border-b">Vencimiento</th>
-                  <th className="p-4 border-b">Monto</th>
-                  <th className="p-4 border-b text-center">Acción</th>
-                </tr>
-              </thead>
-              <tbody className="text-gray-700">
-                {datos.deudas.length === 0 ? (
-                  <tr>
-                    <td colSpan="5" className="p-8 text-center text-green-600 font-medium">
-                      ¡Felicidades! No registras deudas pendientes.
-                    </td>
-                  </tr>
-                ) : (
-                  datos.deudas.map((boleta) => (
-                    <tr key={boleta.id} className="hover:bg-gray-50 transition-colors border-b last:border-none">
-                      <td className="p-4 font-medium">
-                        {boleta.concepto} <br />
-                        <span className="text-xs text-gray-400">Ref: {boleta.bienIdentificador}</span>
-                      </td>
-                      <td className="p-4">{boleta.periodo}</td>
-                      <td className="p-4">
-                        <span className={boleta.estado === 'VENCIDO' ? 'text-red-600 font-semibold' : 'text-gray-700'}>
-                          {boleta.fechaVencimiento}
-                        </span>
-                      </td>
-                      <td className="p-4 font-bold text-gray-900">${boleta.montoTotal.toLocaleString()}</td>
-                      <td className="p-4 text-center">
+          {/* Panel principal: cuánto se debe */}
+          <div className="bg-[#0E4A6B] text-white rounded-lg p-6 sm:p-7 space-y-5">
+            {resumen.total > 0 ? (
+              <>
+                <div>
+                  <p className="text-sm text-[#BFD9EA]">Total adeudado</p>
+                  <p className="num font-bold leading-none mt-2 flex items-baseline">
+                    <span className="text-2xl mr-1.5 text-[#BFD9EA]">$</span>
+                    <span className="text-5xl tracking-tight">{enteros}</span>
+                    <span className="text-xl text-[#BFD9EA]">,{decimales}</span>
+                  </p>
+                </div>
+
+                <div className="space-y-2.5">
+                  <div className="flex h-2.5 rounded-full overflow-hidden bg-[#3B7898]" role="img"
+                    aria-label={`${Math.round(pctVencido)}% del total está vencido`}>
+                    <div className="bg-[#FF8A80]" style={{ width: `${pctVencido}%` }} />
+                    <div className="bg-[#FFD166]" style={{ width: `${100 - pctVencido}%` }} />
+                  </div>
+                  <dl className="grid grid-cols-2 gap-4 text-sm">
+                    <div>
+                      <dt className="flex items-center gap-2 text-[#BFD9EA]">
+                        <span className="w-2.5 h-2.5 rounded-full bg-[#FF8A80]" />
+                        Vencidas ({resumen.nVencidas})
+                      </dt>
+                      <dd className="num font-bold mt-0.5">${formatARS(resumen.montoVencido)}</dd>
+                    </div>
+                    <div>
+                      <dt className="flex items-center gap-2 text-[#BFD9EA]">
+                        <span className="w-2.5 h-2.5 rounded-full bg-[#FFD166]" />
+                        Pendientes ({resumen.nPendientes})
+                      </dt>
+                      <dd className="num font-bold mt-0.5">${formatARS(resumen.montoPendiente)}</dd>
+                    </div>
+                  </dl>
+                </div>
+
+                <div className="border-t border-white/20 pt-4 grid grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <p className="text-[#BFD9EA]">Próximo vencimiento</p>
+                    <p className="font-bold mt-0.5">{proximoVenc ? fmtFecha(proximoVenc) : 'Sin vencimientos'}</p>
+                  </div>
+                  <div>
+                    <p className="text-[#BFD9EA]">Pagado en 2026</p>
+                    <p className="num font-bold mt-0.5">${formatARS(totalPagado)}</p>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="flex items-center gap-4 py-2">
+                <div className="w-12 h-12 rounded-full bg-white/15 flex items-center justify-center shrink-0">
+                  <Icon d={ICONOS.check} className="w-6 h-6" />
+                </div>
+                <div>
+                  <p className="text-xl font-bold">Estás al día</p>
+                  <p className="text-sm text-[#BFD9EA] mt-0.5">No tenés obligaciones registradas.</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* Error de pago */}
+        {errorPago && (
+          <div role="alert" className="flex items-start gap-3 bg-[#FBE9E7] border border-[#F2C4BF] text-[#8C1D18] rounded-md px-4 py-3 text-sm">
+            <Icon d={ICONOS.alerta} className="w-5 h-5 shrink-0 mt-0.5" />
+            <p className="flex-1">{errorPago}</p>
+            <button onClick={() => setErrorPago(null)} className="font-bold underline cursor-pointer">
+              Cerrar
+            </button>
+          </div>
+        )}
+
+        {/* Obligaciones */}
+        <section className="bg-white border border-[#D5DDE3] rounded-lg overflow-hidden">
+          <div className="px-5 sm:px-6 pt-5 pb-4 border-b border-[#D5DDE3] flex flex-col sm:flex-row sm:items-end justify-between gap-4">
+            <div>
+              <h2 className="text-xl font-bold">Tus boletas</h2>
+              <p className="text-sm text-slate-500 mt-0.5">Abrí una boleta para ver el detalle o pagala online.</p>
+            </div>
+
+            <div className="flex gap-1 -mb-4 overflow-x-auto" role="group" aria-label="Filtrar boletas por estado">
+              {tabs.map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setFiltroEstado(t.id)}
+                  aria-pressed={filtroEstado === t.id}
+                  className={`px-3.5 py-2.5 text-sm font-bold border-b-[3px] transition cursor-pointer focus-visible:outline-2 focus-visible:outline-[#0E4A6B] ${
+                    filtroEstado === t.id
+                      ? 'border-[#0E4A6B] text-[#0E4A6B]'
+                      : 'border-transparent text-slate-500 hover:text-[#12202B]'
+                  }`}
+                >
+                  {t.label}
+                  <span className={`num ml-1.5 text-xs px-1.5 py-0.5 rounded ${filtroEstado === t.id ? 'bg-[#DCEAF3]' : 'bg-slate-100'}`}>
+                    {t.n}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {filtroEstado === 'HISTORIAL' ? (
+            pagadas.length === 0 ? (
+              <div className="px-6 py-16 text-center text-sm text-slate-500">Todavía no registrás pagos.</div>
+            ) : (
+              <ul>
+                {pagadas.map((p) => (
+                  <li key={p.id} className="relative border-b border-[#E4EAEE] last:border-b-0 hover:bg-[#F6F9FB] transition-colors">
+                    <span className="absolute left-0 top-0 bottom-0 w-1 bg-[#1B6B3A]" aria-hidden="true" />
+                    <div className="pl-6 pr-5 sm:pr-6 py-4 flex items-center gap-4">
+                      <div className="w-9 h-9 rounded-full bg-[#E3F3E8] text-[#1B6B3A] flex items-center justify-center shrink-0">
+                        <Icon d={ICONOS.check} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <h3 className="font-bold truncate">{p.concepto}</h3>
+                        <p className="text-sm text-slate-600 num">
+                          Período {p.periodo}. {p.fechaPago ? `Pagada el ${fmtFecha(p.fechaPago)}.` : 'Pagada.'}
+                        </p>
+                      </div>
+                      <p className="num font-bold text-lg">${formatARS(p.montoTotal)}</p>
+                      <button
+                        onClick={() => setBoletaSeleccionada(p)}
+                        className="px-3 py-2 rounded-md text-sm font-bold text-[#0E4A6B] border border-[#B9CFDC] hover:bg-[#EAF2F7] transition cursor-pointer flex items-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0E4A6B]"
+                      >
+                        <Icon d={ICONOS.doc} />
+                        <span className="hidden sm:inline">Comprobante</span>
+                        <span className="sm:hidden sr-only">Comprobante</span>
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )
+          ) : deudasFiltradas.length === 0 ? (
+            <div className="px-6 py-16 text-center space-y-2">
+              <div className="w-12 h-12 bg-[#E3F3E8] text-[#1B6B3A] rounded-full flex items-center justify-center mx-auto">
+                <Icon d={ICONOS.check} className="w-6 h-6" />
+              </div>
+              <p className="font-bold">No hay boletas en esta categoría</p>
+              <p className="text-sm text-slate-500">No tenés obligaciones con el filtro seleccionado.</p>
+            </div>
+          ) : (
+            <ul>
+              {deudasFiltradas.map((boleta) => {
+                const est = estadoDe(boleta.estado);
+                const vencida = boleta.estado === 'VENCIDO';
+                return (
+                  <li key={boleta.id} className="relative border-b border-[#E4EAEE] last:border-b-0 hover:bg-[#F6F9FB] transition-colors">
+                    <span className={`absolute left-0 top-0 bottom-0 w-1 ${est.bar}`} aria-hidden="true" />
+                    <div className="pl-6 pr-5 sm:pr-6 py-5 grid lg:grid-cols-[1.5fr_1fr_auto] gap-x-6 gap-y-4 items-center">
+
+                      <div className="space-y-1.5 min-w-0">
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                          <h3 className="font-bold text-base">{boleta.concepto}</h3>
+                          <span className={`inline-flex items-center gap-1.5 text-xs font-bold px-2 py-0.5 rounded ${est.chip}`}>
+                            <span className={`w-1.5 h-1.5 rounded-full ${est.dot}`} />
+                            {est.label}
+                          </span>
+                        </div>
+                        <p className="text-sm text-slate-600 num">
+                          {boleta.bienIdentificador && <>Ref. <strong className="text-[#12202B]">{boleta.bienIdentificador}</strong>. </>}
+                          Período {boleta.periodo}.
+                        </p>
+                        <p className={`text-sm num ${vencida ? 'text-[#B3261E] font-bold' : 'text-slate-600'}`}>
+                          {vencida ? 'Venció el' : 'Vence el'} {boleta.fechaVencimiento}
+                        </p>
+                      </div>
+
+                      <div className="lg:text-right">
+                        <p className="text-xs text-slate-500">Importe</p>
+                        <p className="num text-2xl font-bold">${formatARS(boleta.montoTotal)}</p>
+                      </div>
+
+                      <div className="flex items-center gap-2 lg:justify-end">
+                        <button
+                          onClick={() => setBoletaSeleccionada(boleta)}
+                          className="px-4 py-2.5 rounded-md text-sm font-bold text-[#0E4A6B] border border-[#B9CFDC] hover:bg-[#EAF2F7] transition cursor-pointer flex items-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0E4A6B]"
+                        >
+                          <Icon d={ICONOS.doc} />
+                          Ver boleta
+                        </button>
                         <button
                           onClick={() => handlePagar(boleta.id)}
-                          className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 transition cursor-pointer shadow-sm"
+                          disabled={pagandoId !== null}
+                          className="px-5 py-2.5 rounded-md text-sm font-bold bg-[#0E4A6B] text-white hover:bg-[#0B3B56] disabled:opacity-60 disabled:cursor-not-allowed transition cursor-pointer flex items-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0E4A6B]"
                         >
-                          Pagar
+                          <Icon d={ICONOS.tarjeta} />
+                          {pagandoId === boleta.id ? 'Redirigiendo…' : 'Pagar'}
                         </button>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+                      </div>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
 
-          {/* Resumen total */}
-          <div className="p-6 bg-gray-50 flex justify-end items-center gap-4 border-t border-gray-200">
-            <span className="text-gray-600 font-medium">Total a pagar:</span>
-            <span className="text-2xl font-bold text-gray-900">${totalAPagar.toLocaleString()}</span>
+          {deudasFiltradas.length > 0 && (
+            <div className="px-5 sm:px-6 py-4 bg-[#F6F9FB] border-t border-[#D5DDE3] flex flex-col sm:flex-row justify-between sm:items-center gap-2">
+              <p className="text-sm text-slate-500 max-w-md">
+                Las boletas vencidas ya incluyen los recargos por mora actualizados.
+              </p>
+              <p className="text-sm text-slate-600">
+                {filtroEstado === 'TODOS' ? 'Suma de todas las boletas' : `Suma de las boletas ${filtroEstado === 'VENCIDO' ? 'vencidas' : 'pendientes'}`}
+                <span className="num text-lg font-bold text-[#12202B] ml-3">${formatARS(totalFiltrado)}</span>
+              </p>
+            </div>
+          )}
+        </section>
+      </main>
+
+      {/* Boleta (se imprime sola) */}
+      {boletaSeleccionada && (
+        <div
+          className="fixed inset-0 bg-[#0B1A24]/60 flex justify-center items-end sm:items-center p-0 sm:p-4 z-50 no-print-bg"
+          onClick={() => setBoletaSeleccionada(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="titulo-boleta"
+            onClick={(e) => e.stopPropagation()}
+            className="sheet-in w-full max-w-md max-h-[94vh] overflow-y-auto sm:rounded-lg rounded-t-2xl bg-[#EDF1F4] shadow-2xl"
+          >
+            <div className="flex items-center justify-between px-5 py-4 no-print">
+              <h2 id="titulo-boleta" className="font-bold text-lg">Boleta de pago</h2>
+              <button
+                onClick={() => setBoletaSeleccionada(null)}
+                className="w-9 h-9 rounded-full hover:bg-slate-200 flex items-center justify-center cursor-pointer focus-visible:outline-2 focus-visible:outline-[#0E4A6B]"
+                aria-label="Cerrar boleta"
+              >
+                <Icon d={ICONOS.cerrar} className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Comprobante con forma de ticket */}
+            <div className="px-5 pb-2">
+              <div id="boleta-imprimible" className="bg-white rounded-lg shadow-sm border border-[#D5DDE3] overflow-hidden">
+                <div className="bg-[#0E4A6B] text-white px-5 py-4 flex items-center gap-3">
+                  <div className="w-9 h-9 rounded bg-white/15 flex items-center justify-center font-bold text-xs">ART</div>
+                  <div className="leading-tight">
+                    <p className="text-xs text-[#BFD9EA]">Agencia de Recaudación</p>
+                    <p className="font-bold">Comprobante de obligación tributaria</p>
+                  </div>
+                </div>
+
+                <div className="p-5 space-y-5 text-sm">
+                  <div className="flex justify-between gap-4">
+                    <div>
+                      <p className="text-xs text-slate-500">Contribuyente</p>
+                      <p className="font-bold">{nombreCompleto}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xs text-slate-500">{datos.contribuyente.cuit ? 'CUIT' : 'DNI'}</p>
+                      <p className="font-bold num">{datos.contribuyente.cuit || datos.contribuyente.dni}</p>
+                    </div>
+                  </div>
+
+                  <dl className="space-y-2.5">
+                    {[
+                      ['Concepto', boletaSeleccionada.concepto],
+                      ['Identificador', boletaSeleccionada.bienIdentificador],
+                      ['Período fiscal', boletaSeleccionada.periodo],
+                      ['Vencimiento', boletaSeleccionada.fechaVencimiento],
+                    ].map(([k, v]) => (
+                      <div key={k} className="flex justify-between gap-4">
+                        <dt className="text-slate-500">{k}</dt>
+                        <dd className={`font-bold text-right num ${k === 'Vencimiento' && boletaSeleccionada.estado === 'VENCIDO' ? 'text-[#B3261E]' : ''}`}>{v}</dd>
+                      </div>
+                    ))}
+                    <div className="flex justify-between gap-4 items-center">
+                      <dt className="text-slate-500">Estado</dt>
+                      <dd className={`text-xs font-bold px-2 py-0.5 rounded ${estadoDe(boletaSeleccionada.estado).chip}`}>
+                        {estadoDe(boletaSeleccionada.estado).label}
+                      </dd>
+                    </div>
+                  </dl>
+                </div>
+
+                {/* Línea de corte con muescas */}
+                <div className="relative h-0 border-t-2 border-dashed border-[#D5DDE3]">
+                  <span className="absolute -left-3 -top-3 w-6 h-6 rounded-full bg-[#EDF1F4] border-r border-[#D5DDE3]" />
+                  <span className="absolute -right-3 -top-3 w-6 h-6 rounded-full bg-[#EDF1F4] border-l border-[#D5DDE3]" />
+                </div>
+
+                <div className="p-5 space-y-4">
+                  <div className="flex justify-between items-baseline">
+                    <span className="font-bold">{boletaSeleccionada.estado === 'PAGADO' ? 'Total pagado' : 'Total a pagar'}</span>
+                    <span className="num text-3xl font-bold text-[#0E4A6B]">${formatARS(boletaSeleccionada.montoTotal)}</span>
+                  </div>
+
+                  <div className="pt-1">
+                    <svg viewBox="0 0 280 44" className="w-full h-11" preserveAspectRatio="none" role="img" aria-label="Código de barras de la boleta">
+                      {generarBarras(boletaSeleccionada.id).map((b, i) => (
+                        <rect key={i} x={b.x} y="0" width={b.w} height="44" fill="#12202B" />
+                      ))}
+                    </svg>
+                    <p className="num text-xs text-slate-500 text-center mt-2">
+                      REF-PAGO-TRIB-2026-{boletaSeleccionada.id}-SEC
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-5 flex flex-col-reverse sm:flex-row sm:justify-end gap-3 no-print">
+              <button
+                onClick={() => window.print()}
+                className="px-4 py-3 rounded-md text-sm font-bold text-[#0E4A6B] border border-[#B9CFDC] bg-white hover:bg-[#EAF2F7] transition cursor-pointer flex items-center justify-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0E4A6B]"
+              >
+                <Icon d={ICONOS.imprimir} />
+                Imprimir o guardar PDF
+              </button>
+              {boletaSeleccionada.estado !== 'PAGADO' && <button
+                onClick={() => {
+                  const id = boletaSeleccionada.id;
+                  setBoletaSeleccionada(null);
+                  handlePagar(id);
+                }}
+                className="px-6 py-3 rounded-md text-sm font-bold bg-[#0E4A6B] text-white hover:bg-[#0B3B56] transition cursor-pointer flex items-center justify-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0E4A6B]"
+              >
+                <Icon d={ICONOS.tarjeta} />
+                Pagar ahora
+              </button>}
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
