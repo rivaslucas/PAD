@@ -545,7 +545,7 @@ const nombreReal =
                   <div className="flex justify-between gap-4">
                     <div>
                       <p className="text-xs text-slate-500">Contribuyente</p>
-                      <p className="font-bold">{nombreCompleto}</p>
+                      <p className="font-bold">{nombreReal}</p>
                     </div>
                     <div className="text-right">
                       <p className="text-xs text-slate-500">{datos.contribuyente.cuit ? 'CUIT' : 'DNI'}</p>
