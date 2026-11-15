@@ -221,8 +221,10 @@ export default function Dashboard() {
     { id: 'HISTORIAL', label: 'Historial de pagos', n: pagadas.length },
   ];
 
-  const nombreCompleto = `${datos.contribuyente.nombre} ${datos.contribuyente.apellido || ''}`.trim();
-
+const nombreReal =
+    origenValidacion === 'OPENRENAPER' && datosGuardados?.nombre
+      ? `${datosGuardados.nombre} ${datosGuardados.apellido || ''}`.trim()
+      : `${datos.contribuyente.nombre} ${datos.contribuyente.apellido || ''}`.trim();
   return (
     <div
       className="min-h-screen bg-[#EDF1F4] text-[#12202B] antialiased selection:bg-[#0E4A6B] selection:text-white"
@@ -274,7 +276,7 @@ export default function Dashboard() {
           <div className="space-y-4 pt-1">
             <p className="text-sm text-slate-500">Cuenta del contribuyente</p>
             <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-[#12202B] leading-tight">
-              {nombreCompleto}
+              {nombreReal || 'Contribuyente'}
             </h1>
             <p className="text-sm text-slate-600 num">
               DNI <strong className="text-[#12202B]">{datos.contribuyente.dni}</strong>
