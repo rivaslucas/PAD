@@ -1,50 +1,39 @@
-import prisma from './config/db.js';
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
 
 async function main() {
-  console.log('Inyectando datos de prueba en MySQL...');
-
-  // Limpiamos la base antes de insertar para que no tire error de DNI duplicado si lo corrés varias veces
+  console.log('Limpiando base de datos...');
+  // Hay que borrar en orden para no romper las relaciones
   await prisma.pago.deleteMany();
   await prisma.obligacionTributaria.deleteMany();
   await prisma.bienRegistrable.deleteMany();
   await prisma.contribuyente.deleteMany();
 
-  // Creamos un contribuyente con MÚLTIPLES bienes (Auto y Casa)
-  const nuevoContribuyente = await prisma.contribuyente.create({
+  console.log('Creando contribuyente de prueba con vehículo y deudas...');
+  const juan = await prisma.contribuyente.create({
     data: {
       dni: "35123456",
-      cuit: "20351234567", // Agregado para probar la constancia de inscripción
+      cuit: "20351234567",
       nombre: "Juan",
       apellido: "Perez",
       email: "juan@ejemplo.com",
       bienes: {
         create: [
           {
-            tipo: "AUTOMOTOR",
             identificador: "AB123CD",
+            tipo: "AUTOMOTOR",
             obligaciones: {
-              create: {
-                concepto: "Impuesto Automotor - Cuota 10",
-                periodo: "2026-10",
-                montoOriginal: 45500.00,
-                interesesMora: 1500.00,
-                fechaVencimiento: new Date("2026-10-10"),
-                estado: "VENCIDO"
-              }
-            }
-          },
-          {
-            tipo: "INMOBILIARIO",
-            identificador: "PADRON-987654", // Identificador de una casa/terreno
-            obligaciones: {
-              create: {
-                concepto: "Impuesto Inmobiliario - Cuota 11",
-                periodo: "2026-11",
-                montoOriginal: 85000.00,
-                interesesMora: 0.00,
-                fechaVencimiento: new Date("2026-11-20"),
-                estado: "PENDIENTE"
-              }
+              create: [
+                {
+                  concepto: "Impuesto Automotor",
+                  periodo: "2026-10",
+                  montoOriginal: 45000.00,
+                  interesesMora: 2000.00,
+                  fechaVencimiento: new Date("2026-10-10"),
+                  estado: "VENCIDO"
+                }
+              ]
             }
           }
         ]
@@ -52,13 +41,13 @@ async function main() {
     }
   });
 
-  console.log('¡Datos creados con éxito!');
-  console.dir(nuevoContribuyente, { depth: null });
+  console.log('✅ ¡Datos de prueba cargados con éxito!');
+  console.log(`DNI para ingresar en el Dashboard: ${juan.dni}`);
 }
 
 main()
   .catch((e) => {
-    console.error("Hubo un error:", e);
+    console.error("Error al inyectar datos:", e);
     process.exit(1);
   })
   .finally(async () => {

@@ -2,7 +2,8 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import serviciosRoutes from './routes/servicios.routes.js';
-
+import contribuyentesRoutes from './routes/contribuyentes.routes.js'; // <-- IMPORTACIÓN AGREGADA
+import pagosRoutes from './routes/pagos.routes.js';
 // Importaciones para Swagger
 import swaggerUi from 'swagger-ui-express';
 import { swaggerDocs } from './config/swagger.js';
@@ -28,6 +29,8 @@ app.get('/', (req, res) => {
 // RUTAS DE LA API
 // ==========================================
 app.use('/api/servicios', serviciosRoutes);
+app.use('/api/contribuyentes', contribuyentesRoutes); // <-- RUTA CONECTADA
+app.use('/api/pagos', pagosRoutes);
 
 app.listen(PORT, () => {
   console.log(`Servidor corriendo en http://localhost:${PORT}`);

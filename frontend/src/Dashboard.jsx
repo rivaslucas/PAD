@@ -45,6 +45,37 @@ export default function Dashboard() {
     navigate('/');
   };
 
+  // FUNCIÓN PARA PROCESAR EL PAGO CON PADI
+  const handlePagar = async (id_obligacion) => {
+    try {
+      // Le pedimos el link de pago a nuestro backend
+      const response = await fetch('http://localhost:3000/api/pagos/generar-link', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ id_obligacion })
+      });
+
+      if (!response.ok) {
+        alert("Error al intentar generar el link de pago con Padi.");
+        return;
+      }
+
+      const data = await response.json();
+      
+      // Si el backend nos devuelve el link, redirigimos al usuario a la Billetera Virtual
+      if (data.link_pago) {
+        window.location.href = data.link_pago; 
+      } else {
+        alert("La pasarela de pagos no devolvió un enlace válido.");
+      }
+    } catch (error) {
+      console.error("Error al procesar el pago:", error);
+      alert("Error de conexión con el servidor.");
+    }
+  };
+
   if (cargando) {
     return (
       <div className="min-h-screen bg-gray-50 flex justify-center items-center font-bold text-gray-500">
@@ -129,7 +160,10 @@ export default function Dashboard() {
                       </td>
                       <td className="p-4 font-bold text-gray-900">${boleta.montoTotal.toLocaleString()}</td>
                       <td className="p-4 text-center">
-                        <button className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 transition cursor-pointer shadow-sm">
+                        <button 
+                          onClick={() => handlePagar(boleta.id)}
+                          className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-semibold hover:bg-blue-700 transition cursor-pointer shadow-sm"
+                        >
                           Pagar
                         </button>
                       </td>
