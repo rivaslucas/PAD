@@ -81,7 +81,7 @@ const options = {
       },
     },
   },
-  apis: [], // Si documentas con JSDoc en rutas puedes agregarlo aquí
+  apis: [],
 };
 
 const swaggerSpec = swaggerJsdoc(options);
