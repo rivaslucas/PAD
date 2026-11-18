@@ -211,9 +211,16 @@ export default function Dashboard() {
     navigate('/');
   };
 
-  const handlePagar = async (id_obligacion) => {
+ const handlePagar = async (id_obligacion) => {
     setErrorPago(null);
     setPagandoId(id_obligacion);
+
+    // 1. Abrimos una pestaña en blanco al instante (evita el bloqueo de pop-ups del navegador)
+    const ventanaPadi = window.open('', '_blank');
+    if (ventanaPadi) {
+      ventanaPadi.document.write('<html><head><title>Cargando pasarela de pago...</title></head><body style="font-family:sans-serif; text-align:center; padding-top:50px;"><h3>Conectando con la pasarela Padi...</h3><p>Por favor espere.</p></body></html>');
+    }
+
     try {
       const response = await fetch(`${API_URL}/api/pagos/generar-link`, {
         method: 'POST',
@@ -222,6 +229,7 @@ export default function Dashboard() {
       });
 
       if (!response.ok) {
+        if (ventanaPadi) ventanaPadi.close();
         setErrorPago('No pudimos iniciar el pago con Padi. Intentá de nuevo en unos minutos.');
         setPagandoId(null);
         return;
@@ -229,10 +237,15 @@ export default function Dashboard() {
 
       const data = await response.json();
       if (data.link_pago) {
-        // Abre Padi en una pestaña nueva sin perder tu portal
-        window.open(data.link_pago, '_blank', 'noopener,noreferrer');
+        // 2. Redirigimos la pestaña que ya abrimos hacia el link oficial de Padi
+        if (ventanaPadi) {
+          ventanaPadi.location.href = data.link_pago;
+        } else {
+          // Fallback por si el navegador bloqueó totalmente la ventana
+          window.open(data.link_pago, '_blank');
+        }
 
-        // A los 11 segundos (coordinado con los 10s del backend) refresca las deudas y el historial
+        // 3. A los 11 segundos refresca automáticamente las deudas e historial en tu portal
         setTimeout(async () => {
           try {
             const resActualizada = await fetch(`${API_URL}/api/contribuyentes/${dniUsuario}/deudas`);
@@ -244,11 +257,13 @@ export default function Dashboard() {
           }
         }, 11000);
       } else {
+        if (ventanaPadi) ventanaPadi.close();
         setErrorPago('La pasarela de pagos no devolvió un enlace válido. Intentá de nuevo.');
         setPagandoId(null);
       }
     } catch (err) {
       console.error('Error de red:', err);
+      if (ventanaPadi) ventanaPadi.close();
       setErrorPago('No hay conexión con el servidor de pagos. Revisá tu internet e intentá de nuevo.');
       setPagandoId(null);
     }
