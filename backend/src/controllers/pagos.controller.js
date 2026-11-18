@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 import prisma from '../config/db.js';
 
-// ⚠️ Mapa en memoria: se pierde si el servidor se reinicia o se duerme (pasa en Render gratis).
 const mapeoLinks = new Map();
 
 // ==========================================
