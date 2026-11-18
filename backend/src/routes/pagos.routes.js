@@ -1,92 +1,81 @@
-import swaggerJsdoc from 'swagger-jsdoc';
-import swaggerUi from 'swagger-ui-express';
+import express from 'express';
+import { PrismaClient } from '@prisma/client';
 
-const options = {
-  definition: {
-    openapi: '3.0.0',
-    info: {
-      title: 'API Portal Tributario - TFI Rentas Tucumán',
-      version: '1.0.0',
-      description: 'Documentación oficial de la API backend para el sistema de recaudación fiscal (OpenRENAPER y Pasarela Padi).',
-    },
-    servers: [
-      {
-        url: 'https://pad-3anq.onrender.com',
-        description: 'Servidor de Producción (Render)',
+const router = express.Router();
+const prisma = new PrismaClient();
+
+// Generar link de pago y activar simulación de impacto a los 20 segundos
+router.post('/generar-link', async (req, res) => {
+  try {
+    const { id_obligacion } = req.body;
+    const obligacionId = Number(id_obligacion);
+
+    const obligacion = await prisma.obligacionTributaria.findUnique({
+      where: { id: obligacionId },
+    });
+
+    if (!obligacion) {
+      return res.status(404).json({ error: 'Obligación no encontrada' });
+    }
+
+    // 1. Llamada real a Padi para obtener el link de checkout
+    const responsePadi = await fetch(`${process.env.PADI_API_BASE || 'https://padi.runasp.net'}/api/v1/integrations/payment-links`, {
+      method: 'POST',
+      headers: {
+        'X-Api-Key': process.env.PADI_API_KEY,
+        'Content-Type': 'application/json',
       },
-      {
-        url: 'http://localhost:3000',
-        description: 'Servidor de Desarrollo Local',
-      },
-    ],
-    paths: {
-      '/api/contribuyentes/{dni}/deudas': {
-        get: {
-          summary: 'Obtener deudas y obligaciones de un contribuyente',
-          parameters: [
-            {
-              in: 'path',
-              name: 'dni',
-              required: true,
-              schema: { type: 'string' },
-              description: 'DNI del contribuyente a consultar',
-            },
-          ],
-          responses: {
-            200: {
-              description: 'Datos del contribuyente y lista de deudas/tasas.',
-            },
-            404: {
-              description: 'Contribuyente no encontrado.',
-            },
-          },
-        },
-      },
-      '/api/pagos/generar-link': {
-        post: {
-          summary: 'Generar link de pago con la pasarela Padi',
-          requestBody: {
-            required: true,
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    id_obligacion: { type: 'integer', example: 1 },
-                  },
-                },
+      body: JSON.stringify({
+        amount: obligacion.montoTotal,
+        title: `${obligacion.concepto} - ${obligacion.bienIdentificador}`,
+        currency: 'ARS',
+        type: 'SingleUse',
+        ttlMinutes: 30,
+      }),
+    });
+
+    const dataPadi = await responsePadi.json();
+    const linkPago = dataPadi.checkoutUrl || 'https://padi.runasp.net';
+
+    // 2. Temporizador de 20 segundos para simular que el pago impactó con éxito
+    setTimeout(async () => {
+      try {
+        const estadoActual = await prisma.obligacionTributaria.findUnique({
+          where: { id: obligacionId },
+        });
+
+        if (estadoActual && estadoActual.estado !== 'PAGADO') {
+          await prisma.$transaction([
+            prisma.obligacionTributaria.update({
+              where: { id: obligacionId },
+              data: { estado: 'PAGADO' },
+            }),
+            prisma.pago.create({
+              data: {
+                montoAbonado: obligacion.montoTotal,
+                idTransaccionExterna: `PADI-SIM-${Date.now()}`,
+                estado: 'COMPLETADO',
+                obligacionId: obligacionId,
               },
-            },
-          },
-          responses: {
-            200: {
-              description: 'URL de pago generada con éxito.',
-            },
-          },
-        },
-      },
-      '/api/pagos/webhook': {
-        post: {
-          summary: 'Webhook B2B para recepción de pagos aprobados (Padi)',
-          description: 'Recibe la notificación oficial de Padi, valida la firma HMAC-SHA256 y actualiza la base de datos.',
-          responses: {
-            200: {
-              description: 'Webhook procesado e impactado correctamente.',
-            },
-            401: {
-              description: 'Firma HMAC inválida.',
-            },
-          },
-        },
-      },
-    },
-  },
-  apis: [],
-};
+            }),
+          ]);
+          console.log(`✅ [Auto-Webhook 20s] Boleta #${obligacionId} marcada como PAGADO.`);
+        }
+      } catch (err) {
+        console.error('Error en el temporizador de pago:', err);
+      }
+    }, 20000); // 20 segundos
 
-const swaggerSpec = swaggerJsdoc(options);
+    return res.status(200).json({ link_pago: linkPago });
+  } catch (error) {
+    console.error('Error generando link:', error);
+    return res.status(500).json({ error: 'Error al generar el link de pago' });
+  }
+});
 
-export const setupSwagger = (app) => {
-  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
-  console.log('📄 Swagger UI disponible en /api-docs');
-};
+// Endpoint por si Padi u otro cliente llama al webhook tradicionalmente
+router.post('/webhook', async (req, res) => {
+  return res.status(200).json({ received: true, message: 'Webhook recibido correctamente' });
+});
+
+export default router;
