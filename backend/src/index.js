@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import serviciosRoutes from './routes/servicios.routes.js';
-import contribuyentesRoutes from './routes/contribuyentes.routes.js'; 
+import contribuyentesRoutes from './routes/contribuyentes.routes.js'; // <-- IMPORTACIÓN AGREGADA
 import pagosRoutes from './routes/pagos.routes.js';
 // Importaciones para Swagger
 import swaggerUi from 'swagger-ui-express';
