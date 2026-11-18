@@ -11,6 +11,7 @@ const ESTADOS = {
   PENDIENTE: { label: 'Pendiente', bar: 'bg-[#C98A00]', chip: 'bg-[#FFF3D6] text-[#7A5200]', dot: 'bg-[#C98A00]' },
   PAGADO: { label: 'Pagada', bar: 'bg-[#1B6B3A]', chip: 'bg-[#E3F3E8] text-[#1B6B3A]', dot: 'bg-[#1B6B3A]' },
 };
+
 const fmtFecha = (f) => {
   if (!f) return '';
   const d = new Date(f);
@@ -19,7 +20,6 @@ const fmtFecha = (f) => {
 
 const MESES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 
-// Clave numérica para ordenar y comparar períodos: "2026-10" y "2026-Bimestre 5" (que cierra en octubre)
 const periodoClave = (p = '') => {
   const mensual = /^(\d{4})-(\d{1,2})$/.exec(p);
   if (mensual) return Number(mensual[1]) * 100 + Number(mensual[2]);
@@ -42,7 +42,6 @@ const nombreBien = (d) =>
 const estadoDe = (e) =>
   ESTADOS[e] || { label: e, bar: 'bg-slate-400', chip: 'bg-slate-100 text-slate-700', dot: 'bg-slate-400' };
 
-// Código de barras ilustrativo, estable para cada boleta
 const generarBarras = (seed) => {
   let s = (Number(seed) || 7) * 9301 + 49297;
   const barras = [];
@@ -63,6 +62,7 @@ const Icon = ({ d, className = 'w-4 h-4' }) => (
     <path d={d} />
   </svg>
 );
+
 const ICONOS = {
   salir: 'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9',
   tarjeta: 'M3 7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7zM3 10h18M7 15h3',
@@ -135,22 +135,12 @@ export default function Dashboard() {
     obtenerDeudas();
   }, [dniUsuario, navigate]);
 
-  // Cerrar la boleta con Escape
   useEffect(() => {
     if (!boletaSeleccionada) return;
     const onKey = (e) => e.key === 'Escape' && setBoletaSeleccionada(null);
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [boletaSeleccionada]);
-
-  // Al volver con "Atrás" desde la pasarela, recargamos para limpiar el botón y traer datos frescos
-  useEffect(() => {
-    const alVolver = (e) => {
-      if (e.persisted) window.location.reload();
-    };
-    window.addEventListener('pageshow', alVolver);
-    return () => window.removeEventListener('pageshow', alVolver);
-  }, []);
 
   const todas = datos?.deudas || [];
   const deudas = todas.filter((d) => d.estado !== 'PAGADO');
@@ -163,7 +153,6 @@ export default function Dashboard() {
     .map((d) => d.fechaVencimiento)
     .sort()[0];
 
-  // Bienes detectados automáticamente a partir de las boletas y los pagos
   const bienes = [];
   const periodos = [];
   [...deudas, ...pagadas].forEach((d) => {
@@ -209,7 +198,8 @@ export default function Dashboard() {
     };
   }, [deudas]);
 
-  const deudasFiltradas = filtroEstado === 'HISTORIAL'
+  const deudasFiltradas =
+    filtroEstado === 'HISTORIAL'
       ? []
       : filtroEstado === 'TODOS'
         ? [...deudasBase, ...pagadasBase]
@@ -239,7 +229,20 @@ export default function Dashboard() {
 
       const data = await response.json();
       if (data.link_pago) {
-        window.location.href = data.link_pago;
+        // Abre Padi en una pestaña nueva sin perder tu portal
+        window.open(data.link_pago, '_blank', 'noopener,noreferrer');
+
+        // A los 11 segundos (coordinado con los 10s del backend) refresca las deudas y el historial
+        setTimeout(async () => {
+          try {
+            const resActualizada = await fetch(`${API_URL}/api/contribuyentes/${dniUsuario}/deudas`);
+            if (resActualizada.ok) {
+              setDatos(await resActualizada.json());
+            }
+          } finally {
+            setPagandoId(null);
+          }
+        }, 11000);
       } else {
         setErrorPago('La pasarela de pagos no devolvió un enlace válido. Intentá de nuevo.');
         setPagandoId(null);
@@ -636,14 +639,16 @@ export default function Dashboard() {
                           <Icon d={ICONOS.doc} />
                           {pagada ? 'Comprobante' : 'Ver boleta'}
                         </button>
-                        {!pagada && <button
-                          onClick={() => handlePagar(boleta.id)}
-                          disabled={pagandoId !== null}
-                          className="px-5 py-2.5 rounded-md text-sm font-bold bg-[#0E4A6B] text-white hover:bg-[#0B3B56] disabled:opacity-60 disabled:cursor-not-allowed transition cursor-pointer flex items-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0E4A6B]"
-                        >
-                          <Icon d={ICONOS.tarjeta} />
-                          {pagandoId === boleta.id ? 'Redirigiendo…' : 'Pagar'}
-                        </button>}
+                        {!pagada && (
+                          <button
+                            onClick={() => handlePagar(boleta.id)}
+                            disabled={pagandoId !== null}
+                            className="px-5 py-2.5 rounded-md text-sm font-bold bg-[#0E4A6B] text-white hover:bg-[#0B3B56] disabled:opacity-60 disabled:cursor-not-allowed transition cursor-pointer flex items-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0E4A6B]"
+                          >
+                            <Icon d={ICONOS.tarjeta} />
+                            {pagandoId === boleta.id ? 'Procesando pago…' : 'Pagar'}
+                          </button>
+                        )}
                       </div>
                     </div>
                   </li>
@@ -666,7 +671,7 @@ export default function Dashboard() {
         </section>
       </main>
 
-      {/* Boleta (se imprime sola) */}
+      {/* Modal de Boleta */}
       {boletaSeleccionada && (
         <div
           className="fixed inset-0 bg-[#0B1A24]/60 flex justify-center items-end sm:items-center p-0 sm:p-4 z-50 no-print-bg"
@@ -768,17 +773,19 @@ export default function Dashboard() {
                 <Icon d={ICONOS.imprimir} />
                 Imprimir o guardar PDF
               </button>
-              {boletaSeleccionada.estado !== 'PAGADO' && <button
-                onClick={() => {
-                  const id = boletaSeleccionada.id;
-                  setBoletaSeleccionada(null);
-                  handlePagar(id);
-                }}
-                className="px-6 py-3 rounded-md text-sm font-bold bg-[#0E4A6B] text-white hover:bg-[#0B3B56] transition cursor-pointer flex items-center justify-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0E4A6B]"
-              >
-                <Icon d={ICONOS.tarjeta} />
-                Pagar ahora
-              </button>}
+              {boletaSeleccionada.estado !== 'PAGADO' && (
+                <button
+                  onClick={() => {
+                    const id = boletaSeleccionada.id;
+                    setBoletaSeleccionada(null);
+                    handlePagar(id);
+                  }}
+                  className="px-6 py-3 rounded-md text-sm font-bold bg-[#0E4A6B] text-white hover:bg-[#0B3B56] transition cursor-pointer flex items-center justify-center gap-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0E4A6B]"
+                >
+                  <Icon d={ICONOS.tarjeta} />
+                  Pagar ahora
+                </button>
+              )}
             </div>
           </div>
         </div>

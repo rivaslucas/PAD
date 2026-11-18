@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
@@ -36,8 +37,7 @@ const usadas = new Set();
 
 // ⚠️ Nombre del campo de fecha en el modelo Pago (ej: 'fechaPago' o 'createdAt').
 // Poné null si tu modelo no tiene ninguno.
-const CAMPO_FECHA_PAGO = 'fechaPago';
-
+const CAMPO_FECHA_PAGO = 'fechaTransaccion';
 /* ───────────── Generadores de obligaciones ───────────── */
 
 function mkOb(ident, concepto, periodo, monto, vence, estado) {

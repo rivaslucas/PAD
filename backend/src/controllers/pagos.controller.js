@@ -2,8 +2,6 @@ import crypto from 'node:crypto';
 import prisma from '../config/db.js';
 
 // ⚠️ Mapa en memoria: se pierde si el servidor se reinicia o se duerme (pasa en Render gratis).
-// Si eso ocurre entre generar el link y cobrar, el pago no se registra.
-// Solución definitiva: guardarlo en la base (ver nota en la respuesta).
 const mapeoLinks = new Map();
 
 // ==========================================
@@ -20,7 +18,7 @@ export const generarLinkDePago = async (req, res) => {
 
     if (!obligacion) return res.status(404).json({ error: "Boleta no encontrada" });
 
-    // NUEVO: no se puede volver a pagar una boleta ya cobrada
+    // No se puede volver a pagar una boleta ya cobrada
     if (obligacion.estado === 'PAGADO') {
       return res.status(409).json({ error: "Esta boleta ya fue pagada." });
     }
@@ -47,6 +45,38 @@ export const generarLinkDePago = async (req, res) => {
     const dataPadi = await padiResponse.json();
 
     mapeoLinks.set(dataPadi.id, id_obligacion);
+
+    // ==========================================
+    // SIMULACIÓN AUTOMÁTICA DE PAGO (10 SEGUNDOS)
+    // ==========================================
+    setTimeout(async () => {
+      try {
+        const estadoActual = await prisma.obligacionTributaria.findUnique({
+          where: { id: id_obligacion },
+        });
+
+        if (estadoActual && estadoActual.estado !== 'PAGADO') {
+          await prisma.$transaction([
+            prisma.obligacionTributaria.update({
+              where: { id: id_obligacion },
+              data: { estado: 'PAGADO' },
+            }),
+            prisma.pago.create({
+              data: {
+                montoAbonado: montoTotal,
+                idTransaccionExterna: `PADI-SIM-${Date.now()}`,
+                estado: 'COMPLETADO',
+                obligacionId: id_obligacion,
+                fechaTransaccion: new Date(),
+              },
+            }),
+          ]);
+          console.log(`✅ [Auto-Webhook 10s] Boleta #${id_obligacion} marcada como PAGADO en Clever Cloud.`);
+        }
+      } catch (err) {
+        console.error('Error en el temporizador automático de pago:', err);
+      }
+    }, 10000); // 10.000 ms = 10 segundos
 
     res.json({ link_pago: dataPadi.checkoutUrl });
   } catch (error) {
@@ -76,7 +106,6 @@ export const registrarPagoWebhook = async (req, res) => {
     const recibida = Buffer.from(signature);
     const esperada = Buffer.from(expectedSignature);
 
-    // CORREGIDO: timingSafeEqual lanza error si los largos difieren (daba 500 en vez de 401)
     if (recibida.length !== esperada.length || !crypto.timingSafeEqual(recibida, esperada)) {
       return res.status(401).send('Firma inválida');
     }
@@ -90,7 +119,7 @@ export const registrarPagoWebhook = async (req, res) => {
       const monto_abonado = payload.data.amount;
       const id_transaccion_padi = payload.data.paymentId;
 
-      // NUEVO: idempotencia. Si Padi reintenta el aviso, no duplicamos el pago
+      // Idempotencia: Si Padi reintenta el aviso, no duplicamos
       const yaRegistrado = await prisma.pago.findFirst({
         where: { idTransaccionExterna: id_transaccion_padi }
       });
@@ -111,7 +140,8 @@ export const registrarPagoWebhook = async (req, res) => {
             montoAbonado: monto_abonado,
             idTransaccionExterna: id_transaccion_padi,
             estado: 'COMPLETADO',
-            obligacionId: id_obligacion
+            obligacionId: id_obligacion,
+            fechaTransaccion: new Date()
           }
         }),
         prisma.obligacionTributaria.update({
@@ -121,7 +151,7 @@ export const registrarPagoWebhook = async (req, res) => {
       ]);
 
       mapeoLinks.delete(paymentLinkId);
-      console.log(`✅ ¡Pago Exitoso! Boleta ${id_obligacion} cobrada por $${monto_abonado}`);
+      console.log(`✅ ¡Pago Exitoso por Webhook! Boleta ${id_obligacion} cobrada por $${monto_abonado}`);
     }
 
     res.status(200).json({ received: true });
